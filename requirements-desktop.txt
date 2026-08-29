@@ -1,0 +1,16 @@
+# The desktop shell: a window, a tray icon, and the packager that turns them into an exe.
+# Only needed by `desktop.py` and the PyInstaller build — `run.py` and the container image
+# do not import any of it, which is why it is a separate file.
+-r requirements-browser.txt
+
+# pywebview renders through the Edge WebView2 runtime on Windows (measured: renderer is
+# `edgechromium`), and pulls pythonnet + clr_loader for the WinForms host — so this
+# install is heavier than it looks, and the packaged exe carries a CLR dependency.
+pywebview==6.2.1
+
+# The tray icon. pystray needs Pillow for the icon bitmap; it is a hard dependency
+# rather than an extra.
+pystray==0.19.5
+pillow==12.3.0
+
+pyinstaller==6.22.2

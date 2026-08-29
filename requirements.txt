@@ -1,0 +1,16 @@
+# The panel itself — API, scheduler and HTTP check-in. Enough to run every account
+# whose site answers over HTTP; nothing here can launch a browser.
+#
+# Versions are pinned to what this project was measured against, not to a range:
+# the check-in path reads undocumented fork behaviour, so an unattended upgrade is a
+# way to lose a day. Install with:
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# The other three files:
+#   requirements-browser.txt   + the browser (OAuth re-login, `visit` accounts, Turnstile)
+#   requirements-desktop.txt   + the window, the tray icon and the packager
+#   requirements-dev.txt       + pytest
+fastapi==0.141.1
+uvicorn==0.52.2
+pydantic==2.13.4
+httpx==0.28.1

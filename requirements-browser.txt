@@ -1,0 +1,15 @@
+# The browser path. Not optional for most installs, despite the name: `visit` accounts
+# (anyrouter.top) need a browser on *every* run because probing cannot see their
+# mechanism at all, OAuth accounts need one whenever a session expires, and a
+# Turnstile-gated check-in needs one to mint the token (ADR-0012, ADR-0009).
+#
+# The pip install is the small half. The browser binary itself is ~500MB and does not
+# come from pip — `panel.sandbox.ensure_chromium()` fetches it into .local/cloakbrowser
+# on first use (ADR-0006), which is also where a container volume should be mounted so
+# the download survives a rebuild.
+-r requirements.txt
+
+# Pulls playwright, cryptography and PyNaCl. playwright is pinned separately below
+# because cloakbrowser only asks for >=1.40 and this is the version measured here.
+cloakbrowser==0.5.7
+playwright==1.62.0

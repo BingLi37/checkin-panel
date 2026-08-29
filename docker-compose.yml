@@ -1,0 +1,62 @@
+# The container way to run the panel (ADR-0016).
+#
+#   docker compose up -d && docker compose logs -f
+#
+# Everything worth changing is in `environment` below.
+
+services:
+  panel:
+    build: .
+    image: anyrouter-checkin-panel
+    container_name: checkin-panel
+
+    # 127.0.0.1 is deliberate and is the actual trust boundary. There is no login, and
+    # GET /api/accounts answers with every stored password and session in the clear
+    # (ADR-0003) -- so publishing this as "8000:8000", which listens on every interface,
+    # hands the accounts to anyone on the network. Put a reverse proxy with authentication
+    # in front before that address changes.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    environment:
+      # The scheduler's day is local time: `checkin_after` says when a site opens its bonus
+      # and service.window_start measures the window from it, so a container left on UTC
+      # would check in at the wrong hour. Set this to the timezone the accounts live in.
+      TZ: Asia/Shanghai
+
+      # The browser login goes out through this proxy, and inside a container 127.0.0.1 is
+      # the container itself -- a proxy running on the host is reachable as
+      # host.docker.internal (mapped below for Linux, where Docker does not provide it).
+      # Leave it unset if the browser should go out directly; HTTP check-ins never use it.
+      CHECKIN_PROXY_URL: http://host.docker.internal:7897
+
+      # "0" turns off the daily loop and leaves 签到 in the UI as the only trigger.
+      PANEL_SCHEDULER: "1"
+
+      # "0" turns the promo card off entirely, and nothing is fetched (docs/promo-cards.md).
+      PANEL_PROMO: "1"
+
+    # Docker Desktop resolves host.docker.internal already; on Linux it does not exist, and
+    # this makes the line above mean the same thing there.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    volumes:
+      # The only copy of the accounts, in plaintext (ADR-0003). Back this up independently --
+      # `docker compose down -v` deletes it along with the others.
+      - panel-data:/app/data
+      # Live logged-in browser sessions, one profile per account.
+      - panel-profiles:/app/.browser_profiles
+      # ~500MB of Chromium, downloaded on first use by sandbox.ensure_chromium(). A volume so
+      # a rebuild or a `down` does not mean downloading it again.
+      - panel-browser:/app/.local/cloakbrowser
+
+    restart: unless-stopped
+
+    # The image declares the healthcheck; this only decides what happens on failure.
+    # `docker compose ps` shows the state.
+
+volumes:
+  panel-data:
+  panel-profiles:
+  panel-browser:

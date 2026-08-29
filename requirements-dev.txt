@@ -1,0 +1,8 @@
+# Tests. `pytest.ini` sets asyncio_mode = auto, so pytest-asyncio is what makes the async
+# tests run without a decorator — dropping it does not skip them, it errors the suite out.
+#
+# No test hits the network or launches a browser, so the browser requirements are not
+# needed to run the suite: `panel/tests/test_browser_login.py` drives a fake context.
+-r requirements.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0

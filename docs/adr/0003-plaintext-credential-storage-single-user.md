@@ -1,0 +1,5 @@
+# Plaintext credential storage, single-user self-hosted
+
+Credentials (email/password, session cookies, api_user) are stored in plaintext in a local SQLite file. The panel has no authentication layer — it starts and is immediately usable, with the host OS as the trust boundary. This was chosen because the panel is single-user, self-hosted on the owner's own machine, and plaintext avoids the complexity of key management (master key rotation, key derivation from login password) for a threat model where anyone with filesystem access to the SQLite file already has full machine access anyway.
+
+**Important consequence (recorded as a constraint, not a decision to revisit)**: GitHub Secrets are write-only via the API — the value can be written but never read back. Therefore the panel SQLite file is the *only* readable source of credentials. GitHub Secrets are not a backup. If the SQLite file is lost, credentials in GitHub Secrets become unrecoverable and must be re-entered. The owner must back up the SQLite file independently.

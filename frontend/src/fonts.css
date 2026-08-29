@@ -1,0 +1,70 @@
+/* Bundled through Vite from src/assets/ on purpose: run.py only mounts /assets, so a
+   font in public/ 404s in production — the same reason the favicon did. See AGENTS.md. */
+
+/* iA Writer Quattro S: UI body copy (--font-sans). */
+@font-face {
+  font-family: 'iA Writer Quattro S';
+  src: url('./assets/fonts/iAWriterQuattroS/iAWriterQuattroS-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'iA Writer Quattro S';
+  src: url('./assets/fonts/iAWriterQuattroS/iAWriterQuattroS-Italic.woff2') format('woff2');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'iA Writer Quattro S';
+  src: url('./assets/fonts/iAWriterQuattroS/iAWriterQuattroS-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'iA Writer Quattro S';
+  src: url('./assets/fonts/iAWriterQuattroS/iAWriterQuattroS-BoldItalic.woff2') format('woff2');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* IBM Plex Sans: second choice in the sans stack. */
+@font-face {
+  font-family: 'IBM Plex Sans';
+  src: url('./assets/fonts/IBM/IBMPlexSans_Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* IBM Plex Serif: variable display face, headings only (--font-serif). */
+@font-face {
+  font-family: 'IBM Plex Serif';
+  src: url('./assets/fonts/IBM/IBMPlexSerif_Var.woff2') format('woff2');
+  font-weight: 100 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IBM Plex Serif';
+  src: url('./assets/fonts/IBM/IBMPlexSerif_Var_Italic.woff2') format('woff2');
+  font-weight: 100 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Lilex: numbers, URLs and tokens (--font-mono) — it separates l/1/I and 0/O. */
+@font-face {
+  font-family: 'Lilex';
+  src: url('./assets/fonts/IBM/Lilex_Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}

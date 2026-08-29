@@ -1,0 +1,47 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Cloakbrowser sandbox
+.local/
+.browser_profiles/
+checkin_screenshots/
+balance_hash.txt
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Data — plaintext credentials (ADR-0003), including the pre-migration .v1.bak
+data/
+
+# PyInstaller output (ADR-0016). dist/ also accumulates a real data/panel.db once the built
+# exe has been run, so it is a credential path as much as a build artifact.
+build/
+dist/
+
+# Env
+.env
+.env.local
+
+# Agent tooling and scratch work — local to whoever is working here, not part of the product.
+# .scratch/ holds the harnesses that drive the packaged exe and the tray (they are referenced
+# from AGENTS.md but are throwaway drivers, and demo-panel.db is a database file in a folder
+# nobody should be tempted to publish).
+.scratch/
+.claude/
+.zcode/
+# Per-developer journals and session traces. .trellis/ itself is not ignored: the archived
+# task folders under .trellis/tasks/archive/ are tracked on purpose, they record why things
+# are the way they are.
+.trellis/workspace/
+.trellis/.developer
+.trellis/.current-task
+
+# Cloned upstream check-in script (included in repo for GitHub Actions)
+# nanorouter-check-in/.git/ is excluded but the code is tracked

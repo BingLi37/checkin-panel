@@ -1,0 +1,16 @@
+# pre-commit.ci configuration
+# See https://pre-commit.ci for more info
+
+# Run on all PRs
+autoupdate_schedule: weekly
+autoupdate_commit_msg: 'chore: pre-commit autoupdate'
+
+# Skip slow hooks in CI
+skip: [mypy]
+
+# Auto-fix issues
+autofix_prs: true
+autofix_commit_msg: 'style: auto fixes from pre-commit.ci hooks'
+
+# Commit message for manual fixes
+manual_commit_msg: 'style: manual fixes from pre-commit.ci'

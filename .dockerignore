@@ -1,0 +1,53 @@
+# Deny everything, then allow what the image actually needs.
+#
+# The other way round -- listing what to exclude -- fails silently and expensively here.
+# `data/panel.db` holds every account's password and session in plaintext (ADR-0003), so one
+# forgotten line bakes credentials into an image layer, where deleting the file later does
+# not remove it. A missed *allow* only breaks the build, which is loud and free.
+#
+# Two more reasons this stays a deny-list: `.local/` is a ~500MB browser download and
+# `.browser_profiles/` holds live logged-in sessions. Neither belongs in a build context.
+#
+# Anything new the image needs has to be allowed below on purpose.
+*
+
+# The panel itself. `panel/tests/` comes along so an image can be checked without a second
+# build -- pytest is not installed (it is a dev dependency), so add it for the one command:
+#
+#   docker run --rm <image> sh -c "pip install --user -q pytest pytest-asyncio \
+#     && cd /app && python -m pytest panel/tests -q"     # 188 passed
+#
+# `panel/tests` explicitly, not bare pytest: pytest.ini also lists `tests/`, the desktop
+# shell's own suite, whose target modules are deliberately not in this image.
+!panel/
+!run.py
+!requirements.txt
+!requirements-browser.txt
+
+# The SPA is built inside the image (stage 1), from source only -- `frontend/dist/` and
+# `node_modules/` stay out so the image never inherits a stale or host-built bundle.
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/index.html
+!frontend/vite.config.ts
+!frontend/tsconfig.json
+!frontend/tailwind.config.js
+!frontend/postcss.config.js
+!frontend/src/
+
+# Only the cloakbrowser helpers panel.browser_login imports; checkin.py and its own venv,
+# workflows and config are not on any path the panel uses.
+!anyrouter-check-in/utils/
+# Its BSD-2 notice, which clause 2 asks any redistribution of that code to carry. A published
+# image is a redistribution, so the notice travels with the helpers rather than being left
+# behind in the repo.
+!anyrouter-check-in/LICENSE
+
+# Docs the container's own logs point at when something fails.
+!CONTEXT.md
+!pytest.ini
+
+# Re-exclude what the allows above would otherwise drag back in.
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
