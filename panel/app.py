@@ -63,7 +63,7 @@ class BrowserLoginIn(BaseModel):
 WINDOW = re.compile(r'([01]?\d|2[0-3]):[0-5]\d')
 # Avatar colour/shape are slugs whose meaning lives in frontend/src/avatar.ts. Checking
 # only the shape keeps the palette in one place; an unknown slug falls back there. See
-# .trellis/spec/backend/database-guidelines.md for the whole contract.
+# docs/guidelines/backend/database-guidelines.md for the whole contract.
 AVATAR_SLUG = re.compile(r'[a-z]{2,16}')
 DUPLICATE = '这个网站下已经有同名账号了；换个名称（名称也决定浏览器 profile，重名会共用同一个身份）'
 

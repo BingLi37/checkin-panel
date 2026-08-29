@@ -12,7 +12,7 @@ Two rules an audit of this file turns on, both load-bearing:
 	  field from it ever becomes CSS, HTML, a path, or SQL.
 
 This is the one module outside `store` and `newapi` that opens the network, which
-.trellis/spec/backend/quality-guidelines.md otherwise forbids: the manifest is not a New
+docs/guidelines/backend/quality-guidelines.md otherwise forbids: the manifest is not a New
 API site, nothing here touches a credential, and folding it into `newapi` would put a
 promotion inside the protocol engine.
 """

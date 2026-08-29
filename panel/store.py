@@ -117,7 +117,7 @@ class Account:
 	checkin_after: Optional[str] = None  # 'HH:MM' — when this site opens its daily window
 	# How the list renders this account: a colour slug and a shape slug. The slug values
 	# themselves live in frontend/src/avatar.ts — the backend only checks their shape, so
-	# the palette has one owner (.trellis/spec/backend/database-guidelines.md). None = never
+	# the palette has one owner (docs/guidelines/backend/database-guidelines.md). None = never
 	# chosen; the frontend picks a default.
 	avatar_color: Optional[str] = None
 	avatar_shape: Optional[str] = None

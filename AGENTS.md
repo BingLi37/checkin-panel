@@ -6,7 +6,7 @@ Two packages plus a vendored upstream clone:
 
 - **`panel/`** — FastAPI backend and all the logic. `newapi.py` is the protocol engine (probe + check-in over HTTP, ADR-0007), `service.py` the one path from a stored account to a check-in, `browser_login.py` the OAuth fallback (ADR-0009), `scheduler.py` the in-process daily loop (ADR-0008), `store.py` the SQLite store, `sandbox.py` the startup sequence all three entry points share, `loopback.py` the startup fix without which no async code runs on this machine at all (ADR-0014). **Must stay OS-neutral** — it is imported inside the Linux container, and its 188 tests pass there.
 - **The repo root's `desktop*.py`** — the desktop shell (ADR-0016), where every Windows-only line lives so `panel/` has none: `desktop.py` is the window plus the tray icon, `desktop_dialog.py` the Win32 TaskDialog the X button raises, `desktop_state.py` the GUI-free rule underneath it (tested in `tests/`), `desktop_icon.py` the mark, whose geometry is the SPA favicon's. `desktop.spec` builds it.
-- **`frontend/`** — React + HeroUI + Vite SPA. Built to `frontend/dist/`, served as static assets by FastAPI in production. Dev server at `:5173` proxies `/api` → `:8000`. Flat `src/`: `App.tsx` is the list, `AccountForm.tsx` the add/edit modal, `api.ts` every server type, `AccountAvatar.tsx` + `avatar.ts` the per-row avatar and its palette, `icons.tsx` the inline SVGs and login-method labels, `useStuck.ts` the sticky-toolbar hook. Per-layer conventions and the HeroUI traps measured here live in `.trellis/spec/frontend/component-guidelines.md`.
+- **`frontend/`** — React + HeroUI + Vite SPA. Built to `frontend/dist/`, served as static assets by FastAPI in production. Dev server at `:5173` proxies `/api` → `:8000`. Flat `src/`: `App.tsx` is the list, `AccountForm.tsx` the add/edit modal, `api.ts` every server type, `AccountAvatar.tsx` + `avatar.ts` the per-row avatar and its palette, `icons.tsx` the inline SVGs and login-method labels, `useStuck.ts` the sticky-toolbar hook. Per-layer conventions and the HeroUI traps measured here live in `docs/guidelines/frontend/component-guidelines.md`.
 - **`anyrouter-check-in/`** — cloned upstream check-in script, now kept **only** for its cloakbrowser helpers (`utils/browser.py`, `utils/popups.py`) that `panel/browser_login.py` imports. Nothing on the HTTP check-in path touches it. `panel.sandbox.prepare()` puts this dir on `sys.path` for every entry point, and `panel/tests/conftest.py` does it for the suite; `checkin.py` itself is no longer imported. The container copies `utils/` alone, to the same relative path.
 
 ## Commands
@@ -207,15 +207,16 @@ Default canonical triage labels are used as-is. See `docs/agents/triage-labels.m
 Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
 User-facing docs, kept in the owner's words rather than these: `docs/deploying.md` (the three run modes and the exposure decisions in each) and `docs/promo-cards.md` (what the promo card costs the reader). Both are disclosure documents — if a change alters what leaves the machine or who can reach the panel, they change with it.
+
 ## Coding guidelines
 
-Per-layer conventions live under `.trellis/spec/` — read the one for the layer you are about to
+Per-layer conventions live under `docs/guidelines/` — read the one for the layer you are about to
 write in, because several rules there exist to stop a specific bug that already happened:
 
-- `.trellis/spec/backend/` — database, error handling, logging and quality rules for `panel/`.
+- `docs/guidelines/backend/` — database, error handling, logging and quality rules for `panel/`.
   `database-guidelines.md` is the one `panel/app.py`, `panel/store.py` and `panel/promo.py` point
   at from their comments; it owns the add-a-column contract.
-- `.trellis/spec/frontend/` — components, hooks, state and type safety for `frontend/`.
+- `docs/guidelines/frontend/` — components, hooks, state and type safety for `frontend/`.
   `component-guidelines.md` records the HeroUI traps measured in this project.
 
 These were authored with Trellis, whose task-tracking files are not part of this repository —
