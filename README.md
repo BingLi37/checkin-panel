@@ -39,7 +39,8 @@ sotamodel.net 各有各的坑，代码里对应的判断都能追到一条 ADR�
 
 不想装 Python 的话，去 Releases 下载 zip，解压，双击 `签到面板.exe`。
 
-从源码跑或自己打包：
+从源码跑或自己打包 —— 两者都要求[界面已经构建过](#从源码安装)一次（`frontend/dist/`），
+否则 `desktop.spec` 会直接报 `Unable to find ...frontend\dist`：
 
 ```bat
 .venv\Scripts\python.exe desktop.py             :: 直接运行
