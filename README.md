@@ -40,11 +40,11 @@ sotamodel.net 各有各的坑，代码里对应的判断都能追到一条 ADR�
 不想装 Python 的话，去 Releases 下载 zip，解压，双击 `签到面板.exe`。
 
 从源码跑或自己打包 —— 两者都要求[界面已经构建过](#从源码安装)一次（`frontend/dist/`），
-否则 `desktop.spec` 会直接报 `Unable to find ...frontend\dist`：
+否则 `desktop/desktop.spec` 会直接报 `Unable to find ...frontend\dist`：
 
 ```bat
-.venv\Scripts\python.exe desktop.py             :: 直接运行
-.venv\Scripts\pyinstaller.exe desktop.spec      :: 打包到 dist\签到面板\
+.venv\Scripts\python.exe -m desktop                :: 直接运行
+.venv\Scripts\pyinstaller.exe desktop\desktop.spec :: 打包到 dist\签到面板\
 ```
 
 点 **X 不会退出** —— 它会问一次（可以勾「不再提示」），然后收进通知区域。左键点托盘图标召回窗口，
@@ -99,17 +99,17 @@ start.bat
 
 ```bat
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements-browser.txt
+.venv\Scripts\python.exe -m pip install -r requirements\browser.txt
 ```
 
 四个 requirements 文件是分层的，按需装：
 
 | 文件 | 内容 |
 |---|---|
-| `requirements.txt` | 面板本体，只能做 HTTP 签到 |
-| `requirements-browser.txt` | 加浏览器（OAuth 重登录、`visit` 站点、Turnstile）—— **大多数人要这个** |
-| `requirements-desktop.txt` | 加窗口、托盘、打包器 |
-| `requirements-dev.txt` | 加 pytest |
+| `requirements/base.txt` | 面板本体，只能做 HTTP 签到 |
+| `requirements/browser.txt` | 加浏览器（OAuth 重登录、`visit` 站点、Turnstile）—— **大多数人要这个** |
+| `requirements/desktop.txt` | 加窗口、托盘、打包器 |
+| `requirements/dev.txt` | 加 pytest |
 
 界面需要自己构建一次 —— `frontend/dist/` 是构建产物，不在仓库里（容器方式不用管，镜像自己会构建）：
 
@@ -243,7 +243,7 @@ Fork 之后建议先装上这个钩子，它会在 `git commit` 时拦下形似�
 改前端不用重启面板；改 `panel/` 要重启。
 
 `panel/` 必须保持 OS 中立（它要在 Linux 容器里被导入），所有 Windows 专有代码都在仓库根的
-`desktop*.py` 里。测试目录的划分不是装饰：`panel/tests/`（188 个）要能在容器里跑，`tests/`
+`desktop/` 里。测试目录的划分不是装饰：`panel/tests/`（188 个）要能在容器里跑，`tests/`
 （13 个）测桌面外壳，那些模块故意不在镜像里。
 
 架构、约定和踩过的坑写在 [`AGENTS.md`](AGENTS.md)，术语表在 [`CONTEXT.md`](CONTEXT.md)，

@@ -21,8 +21,8 @@
 # shell's own suite, whose target modules are deliberately not in this image.
 !panel/
 !run.py
-!requirements.txt
-!requirements-browser.txt
+!requirements/base.txt
+!requirements/browser.txt
 
 # The SPA is built inside the image (stage 1), from source only -- `frontend/dist/` and
 # `node_modules/` stay out so the image never inherits a stale or host-built bundle.

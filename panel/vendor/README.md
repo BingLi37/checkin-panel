@@ -40,5 +40,5 @@ imports it.
 
 BSD-2 clause 2 asks a binary redistribution to reproduce the notice, and both distributions are
 one: the desktop exe bundles these files, and so does the container image. `LICENSE` therefore
-ships next to them in both — `desktop.spec` and `Dockerfile` each copy it, and `THIRD-PARTY.md`
+ships next to them in both — `desktop/desktop.spec` and `Dockerfile` each copy it, and `THIRD-PARTY.md`
 at the repo root records where it lands. Do not drop it from either.

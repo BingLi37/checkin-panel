@@ -1,7 +1,7 @@
 # The desktop shell: a window, a tray icon, and the packager that turns them into an exe.
-# Only needed by `desktop.py` and the PyInstaller build — `run.py` and the container image
+# Only needed by `desktop/__main__.py` and the PyInstaller build — `run.py` and the container image
 # do not import any of it, which is why it is a separate file.
--r requirements-browser.txt
+-r browser.txt
 
 # pywebview renders through the Edge WebView2 runtime on Windows (measured: renderer is
 # `edgechromium`), and pulls pythonnet + clr_loader for the WinForms host — so this

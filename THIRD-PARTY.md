@@ -21,7 +21,7 @@ BSD-2 第 2 条要求二进制分发复制其版权声明，所以声明随代�
 - 桌面版 exe 里在 `_internal/panel/vendor/LICENSE`
 - 容器镜像里在 `/app/panel/vendor/LICENSE`
 
-exe 里那一份靠 `desktop.spec` 的 `datas` 显式带上（LICENSE 不是代码，依赖图收不到它）；
+exe 里那一份靠 `desktop/desktop.spec` 的 `datas` 显式带上（LICENSE 不是代码，依赖图收不到它）；
 镜像里那一份跟着 `COPY panel/` 一起进去。改这两处时不要把它漏掉。
 
 ### `pystray` 0.19.5 —— **LGPLv3**，需要注意
@@ -35,9 +35,9 @@ LGPL 的要求不是「你的代码也得开源」——本项目本来就是开
 1. 声明它的许可和版本（本文件即是）；
 2. 指明获取源码的位置：<https://github.com/moses-palmer/pystray>；
 3. 说明替换方式：本项目从源码运行时 `pip install pystray==<你的版本>` 即可换成任意版本，
-   `desktop.py` 只用 `Icon` / `Menu` / `MenuItem` 三个公开接口，没有改动过这个库。
+   `desktop/__main__.py` 只用 `Icon` / `Menu` / `MenuItem` 三个公开接口，没有改动过这个库。
 
-只跑 `run.py` 或容器的人完全不涉及这一条 —— `pystray` 只在 `requirements-desktop.txt` 里，
+只跑 `run.py` 或容器的人完全不涉及这一条 —— `pystray` 只在 `requirements/desktop.txt` 里，
 容器镜像不含它。
 
 如果你希望桌面版彻底不带 LGPL 组件，只有换掉托盘实现这一条路（例如自己用 `Shell_NotifyIconW`
@@ -77,7 +77,7 @@ LGPL 的要求不是「你的代码也得开源」——本项目本来就是开
 
 ### CloakBrowser 浏览器内核
 
-`requirements-browser.txt` 里的 `cloakbrowser` Python 包是 MIT，但它驱动的**浏览器可执行文件
+`requirements/browser.txt` 里的 `cloakbrowser` Python 包是 MIT，但它驱动的**浏览器可执行文件
 是另一个东西**：一个约 500MB 的闭源产品，由 `panel.sandbox.ensure_chromium()` 在首次需要浏览器
 时从 <https://cloakbrowser.dev> / CloakHQ 的 GitHub Releases 下载到 `.local/cloakbrowser/`。
 

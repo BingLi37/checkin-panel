@@ -31,7 +31,11 @@ import sys
 import threading
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# The repo root, which is one level up from this package — `roots()` hands it to `prepare()`
+# as the writable root, so getting it wrong means the panel opens a second, empty
+# data/panel.db beside this file instead of finding the accounts (ADR-0006). A frozen build
+# does not use this value at all; `sandbox.roots` explains what it uses instead.
+ROOT = Path(__file__).resolve().parent.parent
 
 # Before anything builds an event loop (ADR-0014), and before uvicorn is imported. This is
 # the same sequence run.py uses; see panel/sandbox.py for why the order is not negotiable.
@@ -44,9 +48,11 @@ _SANDBOX = prepare(_ROOT, assets=_ASSETS)
 import uvicorn  # noqa: E402
 import webview  # noqa: E402
 
-import desktop_dialog  # noqa: E402
-import desktop_icon  # noqa: E402
-import desktop_state  # noqa: E402
+# Absolute, not relative: PyInstaller runs this module as `__main__` in the frozen build, so
+# `from .dialog import ...` has no package to resolve against. These names work both ways.
+from desktop import dialog as desktop_dialog  # noqa: E402
+from desktop import icon as desktop_icon  # noqa: E402
+from desktop import state as desktop_state  # noqa: E402
 from panel import sandbox  # noqa: E402
 from panel.app import create_app  # noqa: E402
 from panel.service import CheckInService  # noqa: E402

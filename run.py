@@ -1,6 +1,6 @@
 """Panel launcher — the console way to run it. One of three (ADR-0016).
 
-The other two are `desktop.py` (a window plus a tray icon) and the container image.
+The other two are `desktop/__main__.py` (a window plus a tray icon) and the container image.
 All three share `panel.sandbox.prepare()`, which is where the sandbox layout (ADR-0006)
 and the loopback fix (ADR-0014) live; this file only adds uvicorn and the console output.
 

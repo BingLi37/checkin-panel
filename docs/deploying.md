@@ -38,8 +38,8 @@ set PANEL_HOST=127.0.0.1
 ## 2. The desktop app
 
 ```bat
-.venv\Scripts\python.exe desktop.py                :: run it from source
-.venv\Scripts\pyinstaller.exe desktop.spec         :: or build dist\签到面板\
+.venv\Scripts\python.exe -m desktop                :: run it from source
+.venv\Scripts\pyinstaller.exe desktop\desktop.spec :: or build dist\签到面板\
 ```
 
 Clicking **X** does not quit. It asks once, offers to remember the answer, and hides to the

@@ -7,7 +7,7 @@
 # come from pip — `panel.sandbox.ensure_chromium()` fetches it into .local/cloakbrowser
 # on first use (ADR-0006), which is also where a container volume should be mounted so
 # the download survives a rebuild.
--r requirements.txt
+-r base.txt
 
 # Pulls playwright, cryptography and PyNaCl. playwright is pinned separately below
 # because cloakbrowser only asks for >=1.40 and this is the version measured here.

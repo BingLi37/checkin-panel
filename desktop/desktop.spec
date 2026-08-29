@@ -23,16 +23,18 @@ would quit outright. PyInstaller's default bootloader manifest does not declare 
 import sys
 from pathlib import Path
 
-ROOT = Path(SPECPATH).resolve()
+# SPECPATH is the folder holding this file, which is `desktop/` — the repo root is its parent,
+# and every path below is resolved against the root, not against this package.
+ROOT = Path(SPECPATH).resolve().parent
 
 # PyInstaller execs this file with the project root off sys.path, so the icon module it
 # shares with the app is not importable until we put it there.
 if str(ROOT) not in sys.path:
 	sys.path.insert(0, str(ROOT))
 
-import desktop_icon
+from desktop import icon as desktop_icon
 
-# Generated, not committed: one geometry shared with the SPA's favicon (see desktop_icon).
+# Generated, not committed: one geometry shared with the SPA's favicon (see desktop/icon.py).
 ICON = desktop_icon.write_ico(ROOT / 'build' / 'desktop.ico')
 
 # Read-only, resolved against sys._MEIPASS at runtime. The SPA is required — without
@@ -56,7 +58,10 @@ hiddenimports = [
 ]
 
 a = Analysis(
-	['desktop.py'],
+	# The entry script is this package's __main__, given as a path rather than as `-m desktop`
+	# because a spec file takes scripts. Its imports of `desktop.dialog`/`icon`/`state` are
+	# absolute, so the analysis follows them from `pathex` and collects the whole package.
+	[str(ROOT / 'desktop' / '__main__.py')],
 	pathex=[str(ROOT)],
 	binaries=[],
 	datas=datas,
