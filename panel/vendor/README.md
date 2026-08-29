@@ -30,7 +30,7 @@ that way, and fix bugs upstream-shaped rather than reformatting to this project'
 ### Why vendored at all
 
 The browser login needs a real browser to survive a WAF and an OAuth hop, and these helpers carry
-fixes that were measured against live sites (see `CONTEXT.md` and the ADRs). Upstream is a
+fixes that were measured against live sites rather than reasoned about. Upstream is a
 GitHub-Actions script, not a library — it publishes no package, so there is nothing to pin.
 
 Nothing on the HTTP check-in path touches any of this. A panel that only does HTTP check-ins never

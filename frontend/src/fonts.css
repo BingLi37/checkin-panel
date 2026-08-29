@@ -1,5 +1,5 @@
 /* Bundled through Vite from src/assets/ on purpose: run.py only mounts /assets, so a
-   font in public/ 404s in production — the same reason the favicon did. See AGENTS.md. */
+   font in public/ 404s in production — the same reason the favicon is an inline data URI. */
 
 /* iA Writer Quattro S: UI body copy (--font-sans). */
 @font-face {

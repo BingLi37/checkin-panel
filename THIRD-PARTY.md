@@ -101,5 +101,5 @@ body、cookie，也不带任何关于你的信息（`panel/tests/test_promo.py::
 ## 四、这个项目签到的目标站点
 
 本项目不隶属于、也未被 anyrouter.top、agentrouter.org、seekai.cc、sotamodel.net 或任何
-New API 分站背书。站点名称出现在代码和文档里，仅因为它们的行为差异是被实测记录下来的
-（见 `docs/adr/`）。各站点的服务条款由使用者自行遵守。
+New API 分站背书。站点名称出现在代码和文档里，仅因为它们的行为差异是被实测记录下来的。
+各站点的服务条款由使用者自行遵守。

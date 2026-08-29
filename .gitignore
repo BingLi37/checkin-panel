@@ -30,9 +30,8 @@ dist/
 .env.local
 
 # Agent tooling and scratch work — local to whoever is working here, not part of the product.
-# .scratch/ holds the harnesses that drive the packaged exe and the tray (they are referenced
-# from AGENTS.md but are throwaway drivers, and demo-panel.db is a database file in a folder
-# nobody should be tempted to publish).
+# .scratch/ holds the harnesses that drive the packaged exe and the tray (throwaway drivers, and
+# demo-panel.db is a database file in a folder nobody should be tempted to publish).
 .scratch/
 .claude/
 .zcode/

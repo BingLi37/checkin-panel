@@ -1,3 +1,0 @@
-# Frontend: React SPA with HeroUI
-
-The frontend is a React SPA built with [HeroUI](https://www.heroui.com/) (formerly NextUI) component library, communicating with the FastAPI backend via JSON API. This was chosen by the owner's explicit preference over server-side rendering (Jinja2 + HTMX), which would have had zero build step. The trade-off: HeroUI is React-based, so the project gains a Vite + React + Tailwind build pipeline (a second deployable artifact beyond the FastAPI server), but in exchange gets a richer, more polished component set (tables, modals, toasts, switches) that fits a management panel's needs. The FastAPI server serves the built static assets and exposes the JSON API on the same origin.

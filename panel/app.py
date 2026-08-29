@@ -5,7 +5,7 @@ authentication layer** (ADR-0003), and `/api/accounts` hands back whole `Account
 rows — passwords and sessions included. Whatever the panel is bound to is therefore
 the trust boundary, and it is not always loopback: `run.py` defaults to `0.0.0.0`
 (LAN-reachable) while the container defaults to `127.0.0.1`. Publishing the port to
-an untrusted network publishes the credentials with it (CONTEXT.md "Panel Owner").
+an untrusted network publishes the credentials with it.
 """
 import asyncio
 import re

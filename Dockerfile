@@ -62,7 +62,7 @@ RUN pip install --no-cache-dir -r requirements/browser.txt
 # cloakbrowser helpers and, beside them, the BSD-2 notice clause 2 asks a binary
 # redistribution to reproduce — a published image being one.
 COPY panel/ ./panel/
-COPY run.py pytest.ini CONTEXT.md ./
+COPY run.py pytest.ini ./
 COPY --from=spa /build/dist ./frontend/dist
 
 # ADR-0006 says dependencies live inside the project folder. In a container "the project

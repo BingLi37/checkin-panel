@@ -7,7 +7,7 @@ Every New API / One API fork exposes the same public surface:
 	GET  /api/user/self   balance; also accepts an access token
 	PUT  /api/user/self   set username/password (session-authenticated)
 
-Check-in comes in two flavours (see CONTEXT.md "Check-in Mechanism"):
+Check-in comes in two flavours, and the probe decides which:
 
 	endpoint     — the site registers a check-in route; POST it.
 	login_bonus  — no route; a *fresh login* credits the daily bonus and the

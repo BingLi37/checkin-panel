@@ -1,5 +1,0 @@
-# Test check-in is the real check-in (accept double execution)
-
-Running `check_in_account` locally for a "test" performs the real sign-in API call — there is no separate "verify-only" mode. When GitHub Actions' cron later runs the same day, the provider returns "already checked in" (handled as success in `checkin.py:300` via `already_checked_keywords`). This was chosen over building a "verify credentials without signing in" mode (which would call `/api/user/self` only) because such a mode would not exercise the WAF-bypass path (`get_waf_cookies_with_browser`) and would give false confidence — credentials verified without WAF bypass could still fail on GitHub Actions. The double-execution cost is zero (the provider dedupes per day), and it means the panel's test result is the real-world result.
-
-**Consequence**: for an account that was tested locally today, the subsequent GitHub Actions cron run for that account is effectively a no-op that reports "already checked in". This is expected, not a bug.

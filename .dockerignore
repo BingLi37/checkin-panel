@@ -40,8 +40,7 @@
 # above already carries them and their BSD-2 notice (clause 2 asks a redistribution of that
 # code to reproduce it, and a published image is one).
 
-# Docs the container's own logs point at when something fails.
-!CONTEXT.md
+# Needed for the in-container test run documented above.
 !pytest.ini
 
 # Re-exclude what the allows above would otherwise drag back in.

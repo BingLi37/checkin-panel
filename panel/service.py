@@ -197,7 +197,7 @@ class CheckInService:
 			# WAF'd site the protocol attempt cannot even reach the login route.
 			#
 			# Only where the probe found no route, though: `visit` is a declaration of what
-			# probing *cannot* see (AGENTS.md), and it is the natural pick for any site whose
+			# probing *cannot* see, and it is the natural pick for any site whose
 			# UI signs in by itself — api.justwoker.icu does that and still registers
 			# `/api/user/checkin`. Taking the browser there is a dead end: on a JWT fork the
 			# in-page reads need a Bearer token the page alone will not hand over, so an
