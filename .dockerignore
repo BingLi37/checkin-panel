@@ -35,13 +35,9 @@
 !frontend/postcss.config.js
 !frontend/src/
 
-# Only the cloakbrowser helpers panel.browser_login imports; checkin.py and its own venv,
-# workflows and config are not on any path the panel uses.
-!anyrouter-check-in/utils/
-# Its BSD-2 notice, which clause 2 asks any redistribution of that code to carry. A published
-# image is a redistribution, so the notice travels with the helpers rather than being left
-# behind in the repo.
-!anyrouter-check-in/LICENSE
+# No rule for the vendored cloakbrowser helpers: they live in `panel/vendor/`, so `!panel/`
+# above already carries them and their BSD-2 notice (clause 2 asks a redistribution of that
+# code to reproduce it, and a published image is one).
 
 # Docs the container's own logs point at when something fails.
 !CONTEXT.md

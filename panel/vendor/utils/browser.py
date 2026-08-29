@@ -11,9 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from utils.debug import debug_print, is_debug_enabled
-from utils.popups import dismiss_popups, setup_popup_guard
-from utils.proxy import get_playwright_proxy
+from .debug import debug_print, is_debug_enabled
+from .popups import dismiss_popups, setup_popup_guard
+from .proxy import get_playwright_proxy
 
 if TYPE_CHECKING:
 	from playwright.async_api import BrowserContext, Locator, Page

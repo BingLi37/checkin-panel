@@ -6,17 +6,23 @@
 
 ## 一、随二进制分发的代码
 
-### `anyrouter-check-in/` —— 上游签到脚本，BSD 2-Clause
+### `panel/vendor/utils/` —— 上游 cloakbrowser 辅助函数，BSD 2-Clause
 
-作者 Milly。本项目只用到 `utils/browser.py` 和 `utils/popups.py` 两个 cloakbrowser 辅助函数
-（`panel/browser_login.py` 导入），签到主路径完全不经过它。
+作者 Milly，来自 https://github.com/Milly/anyrouter-check-in 。本项目从中复制了 5 个文件
+（1061 行）：`browser.py`、`popups.py` 及其依赖的 `debug.py`、`proxy.py`、`__init__.py`。
+`panel/browser_login.py` 从中导入 6 个名字，只在**浏览器登录**时用到；HTTP 签到主路径完全
+不经过它。上游项目的其余部分（签到脚本本体、workflow、它自己的测试与配置）都不在本仓库里。
 
-BSD-2 第 2 条要求二进制分发复制其版权声明，所以：
+唯一的改动：`browser.py` 里三条内部 import 改成了相对导入。详见 `panel/vendor/README.md`。
 
-- 桌面版 exe 里在 `_internal/anyrouter-check-in/LICENSE`
-- 容器镜像里在 `/app/anyrouter-check-in/LICENSE`
+BSD-2 第 2 条要求二进制分发复制其版权声明，所以声明随代码走：
 
-改动 `desktop.spec` 的 `datas` 或 `.dockerignore` 时不要把这一条删掉。
+- 仓库里在 `panel/vendor/LICENSE`
+- 桌面版 exe 里在 `_internal/panel/vendor/LICENSE`
+- 容器镜像里在 `/app/panel/vendor/LICENSE`
+
+exe 里那一份靠 `desktop.spec` 的 `datas` 显式带上（LICENSE 不是代码，依赖图收不到它）；
+镜像里那一份跟着 `COPY panel/` 一起进去。改这两处时不要把它漏掉。
 
 ### `pystray` 0.19.5 —— **LGPLv3**，需要注意
 

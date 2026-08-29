@@ -5,8 +5,8 @@ identities on forks that refuse to set a password (see ADR-0009). On a
 `login_bonus` site the login *is* the check-in, so this runs once per day for
 those accounts; everywhere else it runs once, to mint the first session.
 
-Requires the cloakbrowser helpers from anyrouter-check-in/ on sys.path
-(`panel.sandbox.prepare` puts them there, as does the test conftest).
+Requires the cloakbrowser helpers vendored in `panel/vendor/utils/` — see the
+README there for what they are and what was changed.
 """
 import asyncio
 import re
@@ -14,14 +14,14 @@ import time
 from dataclasses import dataclass, replace
 from typing import Optional
 
-from utils.browser import (
+from panel.vendor.utils.browser import (
 	launch_login_context,
 	load_browser_login_settings,
 	login_with_email_form,
 	prepare_browser_page,
 	wait_for_waf_ready,
 )
-from utils.popups import dismiss_popups
+from panel.vendor.utils.popups import dismiss_popups
 
 from panel import newapi
 

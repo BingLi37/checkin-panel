@@ -24,10 +24,10 @@ SOFTWARE.
 
 This project vendors code from a third party, under its own terms:
 
-- `anyrouter-check-in/` — the upstream check-in script by Milly, BSD 2-Clause.
-  Only `utils/browser.py` and `utils/popups.py` are on any path this panel uses,
-  and both the desktop build and the container image carry that notice at
-  `anyrouter-check-in/LICENSE`.
+- `panel/vendor/utils/` — cloakbrowser helpers by Milly, BSD 2-Clause, from
+  https://github.com/Milly/anyrouter-check-in. Five files, used only by the
+  browser login. The notice is at `panel/vendor/LICENSE`, and both the desktop
+  build and the container image carry it.
 
 The browser this panel drives (CloakBrowser) is a separate closed-source product
 downloaded at runtime, not redistributed here. See `THIRD-PARTY.md`.

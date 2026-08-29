@@ -9,8 +9,11 @@ Order is load-bearing, not stylistic:
 1. `sys.stdout` line buffering, or the scheduler's prints sit in a buffer for hours.
 2. `loopback.install()` **before anything builds an event loop** (ADR-0014). uvicorn, a
    bare `asyncio.run` and every async test die at startup without it on this machine.
-3. `sys.path` gains `anyrouter-check-in/`, whose cloakbrowser helpers the browser login imports.
-4. Sandbox paths as env defaults (ADR-0006) — `setdefault`, so a real env var still wins.
+3. Sandbox paths as env defaults (ADR-0006) — `setdefault`, so a real env var still wins.
+
+There used to be a step here that put `anyrouter-check-in/` on `sys.path` for the cloakbrowser
+helpers. Those five files are vendored in `panel/vendor/utils/` now, so they import as an ordinary
+subpackage and nothing has to be arranged before the import works.
 
 Two roots, not one. `root` is where the panel *writes* — `data/panel.db`, `.browser_profiles/`,
 the browser cache — and `assets` is where read-only bundled files were unpacked. They are the
@@ -65,10 +68,6 @@ def prepare(root: Path, *, assets: Optional[Path] = None, chromium: bool = True)
 		sys.stdout.reconfigure(line_buffering=True)
 
 	patched = loopback.install()
-
-	checkin_dir = assets / 'anyrouter-check-in'
-	if str(checkin_dir) not in sys.path:
-		sys.path.insert(0, str(checkin_dir))
 
 	os.environ.setdefault('CHECKIN_BROWSER_PROFILE_DIR', str(root / '.browser_profiles'))
 	os.environ.setdefault('CHECKIN_PROXY_URL', 'http://127.0.0.1:7897')

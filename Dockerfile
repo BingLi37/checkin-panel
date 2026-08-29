@@ -56,13 +56,10 @@ WORKDIR /app
 COPY requirements.txt requirements-browser.txt ./
 RUN pip install --no-cache-dir -r requirements-browser.txt
 
-# Only what the panel imports. The vendored clone contributes its cloakbrowser helpers alone,
-# at the path panel.sandbox puts on sys.path.
+# Only what the panel imports. `panel/vendor/` rides along inside this one copy: the
+# cloakbrowser helpers and, beside them, the BSD-2 notice clause 2 asks a binary
+# redistribution to reproduce — a published image being one.
 COPY panel/ ./panel/
-COPY anyrouter-check-in/utils/ ./anyrouter-check-in/utils/
-# BSD-2 clause 2: the notice travels with the code in a binary redistribution, and a published
-# image is one.
-COPY anyrouter-check-in/LICENSE ./anyrouter-check-in/LICENSE
 COPY run.py pytest.ini CONTEXT.md ./
 COPY --from=spa /build/dist ./frontend/dist
 

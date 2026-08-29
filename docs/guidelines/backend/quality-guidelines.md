@@ -11,14 +11,15 @@ Style is by convention, matched to the surrounding file: **tab indentation, sing
 3.11+, no `from __future__ import`**. Type hints on public functions; `Optional[X]` rather than
 `X | None`, matching what is already there.
 
-The `anyrouter-check-in/` subproject has its own `pyproject.toml` with ruff, mypy and bandit.
-Those settings do **not** apply to `panel/` — do not run them against it and do not reformat
-`panel/` to satisfy them.
+`panel/vendor/utils/` is exempt from all of the above. It is upstream's code under upstream's
+conventions (`from __future__` included), vendored rather than depended on — reformatting it to
+match `panel/` would make a diff against upstream unreadable, which is the only way to tell what
+was changed. See `panel/vendor/README.md`.
 
 Verification, from the repo root:
 
 ```bash
-.venv/Scripts/python.exe -m pytest          # 128 tests
+.venv/Scripts/python.exe -m pytest          # 201 tests
 ```
 
 There is no global `uv` and no project-level Python outside `.venv` (ADR-0006). Always use

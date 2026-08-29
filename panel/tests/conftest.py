@@ -1,11 +1,7 @@
-"""Pytest config — puts anyrouter-check-in/ on sys.path so panel.browser_login can
-import the cloakbrowser helpers. Nothing on the daily check-in path needs it."""
-import sys
-from pathlib import Path
+"""Pytest config — installs the loopback fix before any async test builds a loop.
 
-CHECKIN_DIR = Path(__file__).resolve().parent.parent.parent / 'anyrouter-check-in'
-if str(CHECKIN_DIR) not in sys.path:
-	sys.path.insert(0, str(CHECKIN_DIR))
+It used to also put `anyrouter-check-in/` on `sys.path` for the cloakbrowser helpers;
+those are vendored in `panel/vendor/utils/` now and import on their own."""
 
 # Every async test needs an event loop, and a loop needs a socketpair — which the stdlib
 # cannot build on a machine that relays loopback. Without this the whole suite errors out

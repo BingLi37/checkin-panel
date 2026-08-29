@@ -1,7 +1,7 @@
 """Startup sequence tests — the sandbox layout (ADR-0006) and the binary-path trap.
 
-`prepare()` mutates process globals (`os.environ`, `sys.path`), so every test restores
-both; without that the first test to run would decide the answers for the rest.
+`prepare()` mutates `os.environ`, so every test restores it; without that the first test
+to run would decide the answers for the rest.
 """
 
 import os
@@ -15,7 +15,7 @@ from panel import sandbox
 
 @pytest.fixture
 def clean_env(monkeypatch):
-	"""Drop the sandbox vars so setdefault actually sets, and restore sys.path."""
+	"""Drop the sandbox vars so setdefault actually sets."""
 	for key in (
 		'CHECKIN_BROWSER_PROFILE_DIR',
 		'CHECKIN_PROXY_URL',
@@ -23,9 +23,6 @@ def clean_env(monkeypatch):
 		'CLOAKBROWSER_BINARY_PATH',
 	):
 		monkeypatch.delenv(key, raising=False)
-	original = list(sys.path)
-	yield
-	sys.path[:] = original
 
 
 def _make_chromium(root: Path, version: str = '146.0.7680.177.5') -> Path:
@@ -44,7 +41,6 @@ def test_paths_all_land_inside_the_folder(tmp_path, clean_env):
 	assert os.environ['CHECKIN_BROWSER_PROFILE_DIR'] == str(tmp_path / '.browser_profiles')
 	assert os.environ['CLOAKBROWSER_CACHE_DIR'] == str(tmp_path / '.local' / 'cloakbrowser')
 	assert os.environ['CHECKIN_PROXY_URL'] == 'http://127.0.0.1:7897'
-	assert str(tmp_path / 'anyrouter-check-in') in sys.path
 
 
 def test_a_real_env_var_wins_over_the_default(tmp_path, clean_env, monkeypatch):
@@ -108,7 +104,6 @@ def test_calling_it_twice_changes_nothing(tmp_path, clean_env):
 	second = sandbox.prepare(tmp_path)
 
 	assert first == second
-	assert sys.path.count(str(tmp_path / 'anyrouter-check-in')) == 1
 
 
 def test_a_stale_binary_path_is_dropped_rather_than_handed_on(tmp_path, clean_env, monkeypatch):

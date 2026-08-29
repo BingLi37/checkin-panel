@@ -7,7 +7,7 @@ Two packages plus a vendored upstream clone:
 - **`panel/`** — FastAPI backend and all the logic. `newapi.py` is the protocol engine (probe + check-in over HTTP, ADR-0007), `service.py` the one path from a stored account to a check-in, `browser_login.py` the OAuth fallback (ADR-0009), `scheduler.py` the in-process daily loop (ADR-0008), `store.py` the SQLite store, `sandbox.py` the startup sequence all three entry points share, `loopback.py` the startup fix without which no async code runs on this machine at all (ADR-0014). **Must stay OS-neutral** — it is imported inside the Linux container, and its 188 tests pass there.
 - **The repo root's `desktop*.py`** — the desktop shell (ADR-0016), where every Windows-only line lives so `panel/` has none: `desktop.py` is the window plus the tray icon, `desktop_dialog.py` the Win32 TaskDialog the X button raises, `desktop_state.py` the GUI-free rule underneath it (tested in `tests/`), `desktop_icon.py` the mark, whose geometry is the SPA favicon's. `desktop.spec` builds it.
 - **`frontend/`** — React + HeroUI + Vite SPA. Built to `frontend/dist/`, served as static assets by FastAPI in production. Dev server at `:5173` proxies `/api` → `:8000`. Flat `src/`: `App.tsx` is the list, `AccountForm.tsx` the add/edit modal, `api.ts` every server type, `AccountAvatar.tsx` + `avatar.ts` the per-row avatar and its palette, `icons.tsx` the inline SVGs and login-method labels, `useStuck.ts` the sticky-toolbar hook. Per-layer conventions and the HeroUI traps measured here live in `docs/guidelines/frontend/component-guidelines.md`.
-- **`anyrouter-check-in/`** — cloned upstream check-in script, now kept **only** for its cloakbrowser helpers (`utils/browser.py`, `utils/popups.py`) that `panel/browser_login.py` imports. Nothing on the HTTP check-in path touches it. `panel.sandbox.prepare()` puts this dir on `sys.path` for every entry point, and `panel/tests/conftest.py` does it for the suite; `checkin.py` itself is no longer imported. The container copies `utils/` alone, to the same relative path.
+- **`panel/vendor/utils/`** — five files of cloakbrowser helpers copied from upstream `anyrouter-check-in` (BSD-2), the only part of it this panel ever used: `panel/browser_login.py` imports six names from `browser.py` and `popups.py`, which pull in `debug.py` and `proxy.py`. Nothing on the HTTP check-in path touches any of it. They are an ordinary subpackage, so nothing has to be arranged before the import works — there is no `sys.path` step. `panel/vendor/README.md` records the provenance and the one edit made (three internal imports made relative); keep diffs against upstream readable rather than restyling to this project's conventions. `panel/vendor/LICENSE` must ship in both binaries, see THIRD-PARTY.md.
 
 ## Commands
 
@@ -66,17 +66,11 @@ No test hits the network or launches a browser: `test_newapi.py` swaps in an `ht
 
 The window, the tray and the packaged exe are not in the suite — they need a real desktop. They are driven instead by `.scratch/drive_frozen.py` (15 checks against `dist/`, using the messages Windows itself posts), which is what to re-run after touching `desktop*.py` or the spec.
 
-### Lint / format (checkin.py subproject only)
+### Lint / format
 
-The `anyrouter-check-in/` subproject has its own `pyproject.toml` with ruff + mypy + bandit config. These do NOT apply to `panel/` code. Run from inside that directory:
+No linter is configured. Follow existing style: tabs, single quotes, Python 3.11+ (no `from __future__`).
 
-```bash
-cd anyrouter-check-in
-ruff check .
-mypy .
-```
-
-The `panel/` code has no linter configured. Follow existing style: tabs, single quotes, Python 3.11+ (no `from __future__`).
+`panel/vendor/utils/` is the exception — it is upstream's code and upstream's style, `from __future__` and all. Leave it alone so a diff against upstream stays readable.
 
 ## Environment
 
@@ -111,7 +105,7 @@ All optional; `panel.sandbox.prepare()` fills in the last three itself:
 - `TZ` — not read by any panel code, but the scheduler's day is **local** time: `checkin_after` says when a site opens its bonus and `service.window_start` measures from it, so a container left on UTC checks in at the wrong hour. `docker-compose.yml` sets it; the image installs `tzdata` for it.
 - `CHECKIN_BROWSER_PROFILE_DIR`, `CLOAKBROWSER_BINARY_PATH` — see above
 
-No GitHub token, no secrets: the GitHub Actions path is gone (ADR-0008). `.github/workflows/checkin.yml` is dead code kept for reference — it runs the old `checkin.py`, not this panel.
+No GitHub token, no secrets: the GitHub Actions path is gone (ADR-0008). `.github/workflows/checkin.yml` is dead code — it ran upstream's `checkin.py`, which is no longer in this repository at all. It is **excluded from the published repo**: its `cron: '0 */6 * * *'` would be live there, firing every six hours against 20 secrets that do not exist.
 
 ### Deploying the container without handing out the accounts
 

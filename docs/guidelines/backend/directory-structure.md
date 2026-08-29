@@ -38,8 +38,10 @@ panel/
 ├── store.py       293  AccountStore + Account dataclass + schema/migrations
 ├── scheduler.py    76  due() / backoff_s() / run_once() / loop()
 ├── loopback.py    120  socketpair patch; must run before any event loop is built
+├── vendor/             third-party code, BSD-2; see vendor/README.md
+│   └── utils/     1061  cloakbrowser helpers browser_login imports
 └── tests/              pytest, testpaths in root pytest.ini, asyncio_mode=auto
-    ├── conftest.py     puts anyrouter-check-in/ on sys.path, calls loopback.install()
+    ├── conftest.py     calls loopback.install() before any loop is built
     └── test_*.py       one file per module
 ```
 

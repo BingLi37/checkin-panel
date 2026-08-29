@@ -36,21 +36,18 @@ import desktop_icon
 ICON = desktop_icon.write_ico(ROOT / 'build' / 'desktop.ico')
 
 # Read-only, resolved against sys._MEIPASS at runtime. The SPA is required — without
-# frontend/dist the window has nothing to show. The vendored helpers are imported by
-# panel.browser_login through sys.path, so they ship as data, not as a package.
+# frontend/dist the window has nothing to show.
 datas = [
 	(str(ROOT / 'frontend' / 'dist'), 'frontend/dist'),
-	(str(ROOT / 'anyrouter-check-in' / 'utils'), 'anyrouter-check-in/utils'),
-	# Upstream's BSD-2 clause 2 asks that a binary redistribution reproduce its notice, and
-	# this build is one: the cloakbrowser helpers above are its code. Ships next to them, so
-	# a reader who finds the code finds the terms it came under.
-	(str(ROOT / 'anyrouter-check-in' / 'LICENSE'), 'anyrouter-check-in'),
+	# The vendored cloakbrowser helpers are ordinary modules under panel/, so the dependency
+	# graph collects the code itself. These two are not code and would be left behind:
+	# upstream's BSD-2 notice, which clause 2 asks a binary redistribution to reproduce, and
+	# the README saying what the code is and where it came from.
+	(str(ROOT / 'panel' / 'vendor' / 'LICENSE'), 'panel/vendor'),
+	(str(ROOT / 'panel' / 'vendor' / 'README.md'), 'panel/vendor'),
 ]
 
-# Imported by name or through sys.path, so the dependency graph cannot see them.
 hiddenimports = [
-	'utils.browser',
-	'utils.popups',
 	# uvicorn resolves its loop/protocol implementations from strings at runtime.
 	'uvicorn.loops.asyncio',
 	'uvicorn.protocols.http.h11_impl',
@@ -60,7 +57,7 @@ hiddenimports = [
 
 a = Analysis(
 	['desktop.py'],
-	pathex=[str(ROOT), str(ROOT / 'anyrouter-check-in')],
+	pathex=[str(ROOT)],
 	binaries=[],
 	datas=datas,
 	hiddenimports=hiddenimports,
