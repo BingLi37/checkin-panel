@@ -5,8 +5,8 @@
 Two packages plus a vendored upstream clone:
 
 - **`panel/`** — FastAPI backend and all the logic. `newapi.py` is the protocol engine (probe + check-in over HTTP, ADR-0007), `service.py` the one path from a stored account to a check-in, `browser_login.py` the OAuth fallback (ADR-0009), `scheduler.py` the in-process daily loop (ADR-0008), `store.py` the SQLite store, `sandbox.py` the startup sequence all three entry points share, `loopback.py` the startup fix without which no async code runs on this machine at all (ADR-0014). **Must stay OS-neutral** — it is imported inside the Linux container, and its 188 tests pass there.
-- **The repo root's `desktop*.py`** — the desktop shell (ADR-0016), where every Windows-only line lives so `panel/` has none: `desktop.py` is the window plus the tray icon, `desktop_dialog.py` the Win32 TaskDialog the X button raises, `desktop_state.py` the GUI-free rule underneath it (tested in `tests/`), `desktop_icon.py` the mark, whose geometry is the SPA favicon's. `desktop.spec` builds it.
-- **`frontend/`** — React + HeroUI + Vite SPA. Built to `frontend/dist/`, served as static assets by FastAPI in production. Dev server at `:5173` proxies `/api` → `:8000`. Flat `src/`: `App.tsx` is the list, `AccountForm.tsx` the add/edit modal, `api.ts` every server type, `AccountAvatar.tsx` + `avatar.ts` the per-row avatar and its palette, `icons.tsx` the inline SVGs and login-method labels, `useStuck.ts` the sticky-toolbar hook. Per-layer conventions and the HeroUI traps measured here live in `docs/guidelines/frontend/component-guidelines.md`.
+- **`desktop/`** — the desktop shell (ADR-0016), where every Windows-only line lives so `panel/` has none: `__main__.py` is the window plus the tray icon (run it with `python -m desktop`), `dialog.py` the Win32 TaskDialog the X button raises, `state.py` the GUI-free rule underneath it, `icon.py` the mark, whose geometry is the SPA favicon's. `desktop.spec` builds it. Two things about it are load-bearing: `__init__.py` is **empty on purpose**, so `import desktop.state` works on a machine with no pywin32 and the suite can test the close rule anywhere; and `__main__.py`'s `ROOT` is `parent.parent`, because it is one level deeper than `run.py` and `roots()` hands that value to `prepare()` as the *writable* root — get it wrong and the panel opens a second, empty `data/panel.db` inside `desktop/`.
+- **`frontend/`** — React + HeroUI + Vite SPA. Built to `frontend/dist/`, served as static assets by FastAPI in production. Dev server at `:5173` proxies `/api` → `:8000`. Flat `src/`: `App.tsx` is the list, `AccountForm.tsx` the add/edit modal, `api.ts` every server type, `AccountAvatar.tsx` + `avatar.ts` the per-row avatar and its palette, `icons.tsx` the inline SVGs and login-method labels, `useStuck.ts` the sticky-toolbar hook. The HeroUI traps measured here are recorded in the components themselves.
 - **`panel/vendor/utils/`** — five files of cloakbrowser helpers copied from upstream `anyrouter-check-in` (BSD-2), the only part of it this panel ever used: `panel/browser_login.py` imports six names from `browser.py` and `popups.py`, which pull in `debug.py` and `proxy.py`. Nothing on the HTTP check-in path touches any of it. They are an ordinary subpackage, so nothing has to be arranged before the import works — there is no `sys.path` step. `panel/vendor/README.md` records the provenance and the one edit made (three internal imports made relative); keep diffs against upstream readable rather than restyling to this project's conventions. `panel/vendor/LICENSE` must ship in both binaries, see THIRD-PARTY.md.
 
 ## Commands
@@ -21,8 +21,8 @@ start.bat
 .venv\Scripts\python.exe run.py
 
 :: 2. the desktop way — a window plus a tray icon
-.venv\Scripts\python.exe desktop.py
-.venv\Scripts\pyinstaller.exe desktop.spec    :: -> dist\签到面板\签到面板.exe
+.venv\Scripts\python.exe -m desktop
+.venv\Scripts\pyinstaller.exe desktop\desktop.spec    :: -> dist\签到面板\签到面板.exe
 ```
 
 ```bash
@@ -32,7 +32,7 @@ docker compose build && docker compose up -d && docker compose logs -f
 
 Serves `http://127.0.0.1:8000`; if `frontend/dist/` exists it serves the built SPA, otherwise API only. `run.py` binds `0.0.0.0` by default — see `PANEL_HOST` under Env vars, it is the trust boundary.
 
-**Never run two at once.** They share `data/panel.db` and `.browser_profiles/`: two panels mean a locked database and two browsers on one profile. `desktop.py` refuses on its own (a named mutex catches a second desktop instance, a port probe catches `start.bat`), but nothing stops the container from being started beside either — its own volumes are separate, so it would be a *second* set of accounts checking into the same sites.
+**Never run two at once.** They share `data/panel.db` and `.browser_profiles/`: two panels mean a locked database and two browsers on one profile. `desktop/__main__.py` refuses on its own (a named mutex catches a second desktop instance, a port probe catches `start.bat`), but nothing stops the container from being started beside either — its own volumes are separate, so it would be a *second* set of accounts checking into the same sites.
 
 ### Frontend dev / build
 
@@ -55,16 +55,16 @@ from `frontend/public/`, so a file put there 404s in production. Static assets t
 ### Tests
 
 ```bash
-.venv\Scripts\python.exe -m pytest              # everything (201 tests)
+.venv\Scripts\python.exe -m pytest              # everything (188 tests)
 .venv\Scripts\python.exe -m pytest panel/tests/test_newapi.py -v   # single file
 .venv\Scripts\python.exe -m pytest -k test_probe -v                # single test
 ```
 
-Root `pytest.ini` sets `testpaths = panel/tests tests`; `asyncio_mode = auto`, so async tests need no decorator. The split is not cosmetic: `panel/tests` (188) must be runnable in the Linux container, `tests/` (13) covers the repo-root desktop shell whose modules are deliberately not in the image — so **a test for a root module does not go under `panel/tests/`**, which is what stopped the container collecting the suite at all.
+Root `pytest.ini` sets `testpaths = panel/tests`; `asyncio_mode = auto`, so async tests need no decorator. All 188 of them must stay runnable inside the Linux container, which is why nothing under `panel/tests/` may import `desktop/` — that is what stopped the container collecting the suite at all. The desktop shell has its own suite, kept with the development tree.
 
 No test hits the network or launches a browser: `test_newapi.py` swaps in an `httpx.MockTransport` fake site, `test_browser_login.py` a fake browser context, `test_service.py` stubs `newapi.check_in`/`probe` and the browser hop.
 
-The window, the tray and the packaged exe are not in the suite — they need a real desktop. They are driven instead by `.scratch/drive_frozen.py` (15 checks against `dist/`, using the messages Windows itself posts), which is what to re-run after touching `desktop*.py` or the spec.
+The window, the tray and the packaged exe are not in the suite — they need a real desktop. They are driven instead by a harness kept with the development tree (15 checks against `dist/`, using the messages Windows itself posts), which is what to re-run after touching anything in `desktop/`. Its `AC1b` check is the one that catches a wrong `ROOT`: it asserts the database landed beside the exe rather than in a temp dir.
 
 ### Lint / format
 
@@ -90,7 +90,7 @@ Two deviations, both argued in ADR-0016. **The container** keeps the same layout
 
 ### If nothing async will start (ADR-0014)
 
-`ConnectionError: Unexpected peer connection` out of `socket.socketpair` means this machine's loopback is being relayed by a local transparent proxy, which breaks the stdlib's address check. It kills `uvicorn.run`, a bare `asyncio.run`, and every async test alike — before any panel code runs. `panel.loopback.install()` fixes it, and every entry point gets it by calling `panel.sandbox.prepare()` first (`run.py`, `desktop.py`, and `panel/tests/conftest.py` for the suite); a **new entry point that builds its own event loop has to call it too**, or it dies the same way. Not an issue in the container — that is a Linux kernel with a real `socketpair`, and the patch stays a no-op there.
+`ConnectionError: Unexpected peer connection` out of `socket.socketpair` means this machine's loopback is being relayed by a local transparent proxy, which breaks the stdlib's address check. It kills `uvicorn.run`, a bare `asyncio.run`, and every async test alike — before any panel code runs. `panel.loopback.install()` fixes it, and every entry point gets it by calling `panel.sandbox.prepare()` first (`run.py`, `desktop/__main__.py`, and `panel/tests/conftest.py` for the suite); a **new entry point that builds its own event loop has to call it too**, or it dies the same way. Not an issue in the container — that is a Linux kernel with a real `socketpair`, and the patch stays a no-op there.
 
 ### Env vars
 
@@ -186,33 +186,4 @@ Two properties are the point of the design, so do not quietly break them: **ever
 
 Credentials sit in plaintext in `data/panel.db`, with no auth layer in front of the panel. Since the GitHub mirror is gone that file is the only copy — back it up independently, and never print its values.
 
-## Agent skills
-
-### Issue tracker
-
-Issues live as markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Default canonical triage labels are used as-is. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
-
 User-facing docs, kept in the owner's words rather than these: `docs/deploying.md` (the three run modes and the exposure decisions in each) and `docs/promo-cards.md` (what the promo card costs the reader). Both are disclosure documents — if a change alters what leaves the machine or who can reach the panel, they change with it.
-
-## Coding guidelines
-
-Per-layer conventions live under `docs/guidelines/` — read the one for the layer you are about to
-write in, because several rules there exist to stop a specific bug that already happened:
-
-- `docs/guidelines/backend/` — database, error handling, logging and quality rules for `panel/`.
-  `database-guidelines.md` is the one `panel/app.py`, `panel/store.py` and `panel/promo.py` point
-  at from their comments; it owns the add-a-column contract.
-- `docs/guidelines/frontend/` — components, hooks, state and type safety for `frontend/`.
-  `component-guidelines.md` records the HeroUI traps measured in this project.
-
-These were authored with Trellis, whose task-tracking files are not part of this repository —
-only the guidelines are, since they are the half that describes the code rather than the process
-that produced it.

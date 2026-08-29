@@ -4,7 +4,7 @@
 
 So there are now three entry points, and **one** startup sequence underneath them:
 
-| | `run.py` | `desktop.py` | the image |
+| | `run.py` | `desktop/__main__.py` | the image |
 |---|---|---|---|
 | how it starts | `start.bat` | double-click | `docker compose up -d` |
 | the UI | a browser tab | its own window | a browser tab |
@@ -17,9 +17,9 @@ So there are now three entry points, and **one** startup sequence underneath the
 
 Clicking X hides the panel and says so once, with a "don't show again" box; the tray icon's left click brings it back and its 退出 really quits. This is the one place the shell overrides what a window manager normally means, so it is worth being explicit: the panel is only useful while it is running, and a user who closes the window has almost certainly not decided to stop checking in. Asking once, and never again after they say so, costs one dialog.
 
-The dialog is a Win32 `TaskDialogIndirect` in `desktop_dialog.py` rather than anything from the GUI stack, because pywebview asks its `closing` handler **synchronously** and takes the answer literally — there is nowhere to await a web modal. It also means the shell needs Common Controls **v6**: `C:\Windows\System32\comctl32.dll` is the v5 copy and does not export that symbol, so its absence shows up as an `AttributeError` at attribute lookup, not an error code. `python.exe`'s own manifest asks for v6, which is why development worked; the packaged exe needs the dependency declared in `desktop.spec`, and the acceptance check that would catch its loss is "did the X button produce a dialog".
+The dialog is a Win32 `TaskDialogIndirect` in `desktop/dialog.py` rather than anything from the GUI stack, because pywebview asks its `closing` handler **synchronously** and takes the answer literally — there is nowhere to await a web modal. It also means the shell needs Common Controls **v6**: `C:\Windows\System32\comctl32.dll` is the v5 copy and does not export that symbol, so its absence shows up as an `AttributeError` at attribute lookup, not an error code. `python.exe`'s own manifest asks for v6, which is why development worked; the packaged exe needs the dependency declared in `desktop/desktop.spec`, and the acceptance check that would catch its loss is "did the X button produce a dialog".
 
-Everything decidable without a desktop is in `desktop_state.py` (`decide_close`, and the rule that only a stored `true` counts as consent), which is why 13 of the 201 tests can cover it. The window and the tray were verified by driving the built exe with the messages Windows itself posts — 15 checks, including a real mouse click on the tray menu item where `GetMenuItemRect` says it is.
+Everything decidable without a desktop is in `desktop/state.py` (`decide_close`, and the rule that only a stored `true` counts as consent), which is why a suite with no desktop at all can cover it (those 13 tests are kept with the development tree, not here). The window and the tray were verified by driving the built exe with the messages Windows itself posts — 15 checks, including a real mouse click on the tray menu item where `GetMenuItemRect` says it is.
 
 ## The container's deliberate deviation from ADR-0006
 
@@ -34,7 +34,7 @@ The browser binary is not in the image on purpose. `cloakbrowser.launch_async` c
 - The scheduler no longer depends on a console window nobody may close. The desktop shell refuses to start beside `start.bat` (a named mutex for a second desktop instance, a port probe for the rest) because two panels would lock one database and put two browsers on one profile.
 - That port probe cannot be a `bind()`: `SO_REUSEADDR` on Windows means "bind anyway, even though someone holds this", so the probe reported a busy port as free and uvicorn went on to fight the owner's panel for it (measured). It dials instead — an answered connection proves a listener, and a socket that is bound but not listening refuses, which is the case uvicorn can still take.
 - The frozen build has **two** roots. `sys._MEIPASS` is a temp directory PyInstaller deletes on exit, so resolving `data/panel.db` against it would put the accounts somewhere new on every run and then throw them away; `sandbox.roots()` returns the exe's folder for what is written and `_MEIPASS` for what was bundled.
-- `panel/` stays OS-neutral, and that is now checked rather than asserted: all 188 of its tests pass inside the Linux image. The Win32 code (`desktop_dialog.py`) and the shell's own tests (`tests/`) live at the repo root for the same reason — a test for a root module sitting under `panel/tests/` is what stopped the container collecting the suite at all.
+- `panel/` stays OS-neutral, and that is now checked rather than asserted: all 188 of its tests pass inside the Linux image. The Win32 code (`desktop/dialog.py`) and the shell's own tests live outside `panel/` for the same reason — a test for a desktop module sitting under `panel/tests/` is what stopped the container collecting the suite at all.
 - Rejected: onefile PyInstaller. It unpacks ~40MB per launch, moves `_MEIPASS` every run, and cannot hold the writable folders that have to sit beside the exe.
 - Rejected: a command queue between the tray thread and the window. Its only justification was a deadlock that was inferred and then measured not to exist — calling pywebview from pystray's own thread returns normally. Quitting still posts `WM_CLOSE` rather than calling `destroy()`, not for deadlock reasons but because a posted message cannot block by construction and quitting is the one path that must never wedge.
 - Rejected: shipping the browser in the image, and shipping CJK fonts. The first doubles it for something a volume holds better; the second is ~100MB for screenshots this code path does not take (`panel/browser_login.py` saves none).

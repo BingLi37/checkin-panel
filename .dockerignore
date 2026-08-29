@@ -17,8 +17,9 @@
 #   docker run --rm <image> sh -c "pip install --user -q pytest pytest-asyncio \
 #     && cd /app && python -m pytest panel/tests -q"     # 188 passed
 #
-# `panel/tests` explicitly, not bare pytest: pytest.ini also lists `tests/`, the desktop
-# shell's own suite, whose target modules are deliberately not in this image.
+# `panel/tests` explicitly rather than bare pytest, so the command keeps working if a suite is
+# ever added whose target modules are deliberately not in this image — the desktop shell's is
+# exactly that, and it is kept with the development tree.
 !panel/
 !run.py
 !requirements/base.txt

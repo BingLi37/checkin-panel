@@ -1,8 +1,8 @@
 """The desktop shell's decisions and its one remembered preference — no GUI, no Win32.
 
-Split out of `desktop.py` so both are reachable: importing `desktop.py` starts a sandbox
-and pulls in webview, pystray and uvicorn, and `desktop_dialog.py` cannot even be imported
-off Windows (`ctypes.wintypes` raises there). Everything here is stdlib, so the rule that
+Split out of `__main__.py` so both are reachable: importing that starts a sandbox and pulls in
+webview, pystray and uvicorn, and `dialog.py` cannot even be imported off Windows
+(`ctypes.wintypes` raises there). Everything here is stdlib, so the rule that
 actually matters — what a click on X does — is testable.
 
 Why the preference is a JSON file and not a column in `data/panel.db`:

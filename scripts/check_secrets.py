@@ -8,11 +8,11 @@ and by then the fix is a rewrite plus a revocation rather than an edit.
 
 So this checks what is *staged*, before it becomes history. Run it as a pre-commit hook:
 
-	.venv\\Scripts\\python.exe check_secrets.py --install
+	.venv\\Scripts\\python.exe scripts\\check_secrets.py --install
 
 or by hand over the whole tree, which is what to do before making a repo public:
 
-	.venv\\Scripts\\python.exe check_secrets.py --all
+	.venv\\Scripts\\python.exe scripts\\check_secrets.py --all
 
 Two things it deliberately does not do. It never prints a matched value — a scanner that
 echoes the secret it found puts it in your terminal scrollback and your CI log. And it does
@@ -28,7 +28,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# The repo root, one level up from this script's own folder. Every use of it below wants the
+# root and none wants `scripts/`: git runs with it as cwd, `--install` writes into its
+# `.git/hooks`, and `--all` reads tracked paths against it. Get it wrong and `--install`
+# silently reports no .git/hooks while the real hook stays uninstalled.
+ROOT = Path(__file__).resolve().parent.parent
+# Derived, never written twice: this is the one path allowed to contain the pattern text, and a
+# stale literal here would make the scanner refuse its own file after any future move.
+SELF = Path(__file__).resolve().relative_to(ROOT).as_posix()
 
 # Prefix-anchored shapes only. Each is a token format whose issuer documents the prefix, so
 # there is no innocent reason for one to appear in source.
@@ -45,7 +52,7 @@ PATTERNS = (
 
 # Paths that are allowed to describe these shapes: this file names every prefix it looks for,
 # and the docs explain what leaked. Matching on the pattern text is the point there.
-ALLOWED = {'check_secrets.py'}
+ALLOWED = {SELF}
 
 # A database is never source. Committing one is how plaintext credentials (ADR-0003) would
 # reach a public repo without matching any pattern at all, since sqlite stores them verbatim
@@ -109,7 +116,7 @@ def main() -> int:
 		# a double-quoted string is an escape character -- `.venv` would arrive as `.venv`
 		# only by luck, since \v is a real escape. Windows accepts / in every path API.
 		interpreter = Path(sys.executable).as_posix()
-		script = (ROOT / 'check_secrets.py').as_posix()
+		script = Path(__file__).resolve().as_posix()
 		hook.write_text(
 			'#!/bin/sh\n'
 			'# Installed by check_secrets.py --install\n'
@@ -141,7 +148,7 @@ def main() -> int:
 		print(
 			'\nIf it is a real credential: revoke it first, then remove it. A revoked secret is'
 			'\nharmless wherever it ended up; an unrevoked one in git history needs a rewrite.'
-			'\nIf it is a false positive, add the path to ALLOWED in check_secrets.py.'
+			f'\nIf it is a false positive, add the path to ALLOWED in {SELF}.'
 		)
 		return 1
 

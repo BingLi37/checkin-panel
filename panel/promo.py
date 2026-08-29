@@ -11,10 +11,10 @@ Two rules an audit of this file turns on, both load-bearing:
 	- the manifest is untrusted input. A card whose CTA is not https is dropped, and no
 	  field from it ever becomes CSS, HTML, a path, or SQL.
 
-This is the one module outside `store` and `newapi` that opens the network, which
-docs/guidelines/backend/quality-guidelines.md otherwise forbids: the manifest is not a New
-API site, nothing here touches a credential, and folding it into `newapi` would put a
-promotion inside the protocol engine.
+This is the one module outside `store` and `newapi` that opens the network, which the backend
+convention otherwise forbids, and the deviation is deliberate: the manifest is not a New API
+site, nothing here touches a credential, and folding it into `newapi` would put a promotion
+inside the protocol engine.
 """
 import os
 import random

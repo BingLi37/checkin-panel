@@ -225,15 +225,15 @@ profile 里，搬不动。
 ## 开发
 
 ```bat
-.venv\Scripts\python.exe -m pytest              :: 201 个测试
+.venv\Scripts\python.exe -m pytest              :: 188 个测试
 cd frontend && npm run dev                       :: 前端热重载，:5173 代理到 :8000
 ```
 
 Fork 之后建议先装上这个钩子，它会在 `git commit` 时拦下形似凭据的字符串和数据库文件：
 
 ```bat
-.venv\Scripts\python.exe check_secrets.py --install
-.venv\Scripts\python.exe check_secrets.py --all   :: 或手动全树扫一遍
+.venv\Scripts\python.exe scripts\check_secrets.py --install
+.venv\Scripts\python.exe scripts\check_secrets.py --all   :: 或手动全树扫一遍
 ```
 
 它只匹配有固定前缀、不可能有正当含义的形状（`ghp_`、`sk-`、`AKIA`、私钥头等），所以报警就是真
@@ -243,8 +243,8 @@ Fork 之后建议先装上这个钩子，它会在 `git commit` 时拦下形似�
 改前端不用重启面板；改 `panel/` 要重启。
 
 `panel/` 必须保持 OS 中立（它要在 Linux 容器里被导入），所有 Windows 专有代码都在仓库根的
-`desktop/` 里。测试目录的划分不是装饰：`panel/tests/`（188 个）要能在容器里跑，`tests/`
-（13 个）测桌面外壳，那些模块故意不在镜像里。
+`desktop/` 里。`panel/tests/` 的 188 个测试因此必须能在容器里跑——桌面外壳的测试不在这里，
+它们跟开发树放在一起。
 
 架构、约定和踩过的坑写在 [`AGENTS.md`](AGENTS.md)，术语表在 [`CONTEXT.md`](CONTEXT.md)，
 每个非显然的决定都有一条 [`docs/adr/`](docs/adr/)。
