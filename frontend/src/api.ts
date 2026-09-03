@@ -74,6 +74,42 @@ export interface SiteInfo {
   mechanism: 'endpoint' | 'login_bonus'
 }
 
+/** What a pasted credential turned out to be worth, checked while the form is still open.
+ *
+ *  `warning` is the reason phrased for whoever pasted it, and it is set whenever `ok` is
+ *  false — the account is saved either way, because a WAF can refuse a perfectly good
+ *  cookie (ADR-0010) and throwing the account away over that would be wrong. */
+export interface CredentialCheck {
+  ok: boolean
+  /** Which cookie authenticated: `session`, or `new_api_refresh` on a JWT fork. */
+  kind: string | null
+  api_user: string | null
+  username: string | null
+  quota: number | null
+  /** The credential is live but this fork also wants the account id as `new-api-user`. */
+  needs_api_user: boolean
+  reason: string | null
+  warning: string | null
+}
+
+/** A saved account, plus the verdict on any credential the same request carried. */
+export interface AccountSaved {
+  account: Account
+  credential: CredentialCheck | null
+}
+
+/** What one IdP-cookie injection did. `verified` is three-valued: true means a headless
+ *  OAuth hop just completed with these cookies, false means it did not, null means nobody
+ *  asked. Only true is evidence. The site session it won is deliberately not returned. */
+export interface IdpInjection {
+  injected: number
+  hosts: string[]
+  verified: boolean | null
+  api_user: string | null
+  reason: string | null
+  warning: string | null
+}
+
 /** A promo card, as `panel/promo.py` decided to show it. Text only, by design: the
  *  manifest is remote input, so nothing in here becomes markup, CSS or a class name. */
 export interface Promo {
@@ -87,6 +123,22 @@ export interface Promo {
   title: string
   body: string
   cta: { label: string; url: string }
+}
+
+/** A browser profile on disk that no account claims. `provider` is null for one left by an
+ *  older layout, which is also why `key` is what gets sent back: it is the path relative to
+ *  the profile root either way, so one string addresses both shapes. */
+export interface OrphanProfile {
+  key: string
+  name: string
+  provider: string | null
+  bytes: number
+  old_layout: boolean
+}
+
+export interface OrphanProfiles {
+  profiles: OrphanProfile[]
+  bytes: number
 }
 
 const API_BASE = '/api'
@@ -115,10 +167,16 @@ const post = <T>(url: string, body?: unknown) =>
 
 export const api = {
   listAccounts: () => request<Account[]>('/accounts'),
-  createAccount: (input: AccountInput) => post<Account>('/accounts', input),
+  createAccount: (input: AccountInput) => post<AccountSaved>('/accounts', input),
   updateAccount: (id: number, fields: Partial<AccountInput>) =>
-    request<Account>(`/accounts/${id}`, { method: 'PUT', body: JSON.stringify(fields) }),
-  deleteAccount: (id: number) => request<void>(`/accounts/${id}`, { method: 'DELETE' }),
+    request<AccountSaved>(`/accounts/${id}`, { method: 'PUT', body: JSON.stringify(fields) }),
+  /** `forgetProfile` defaults to true server-side too: the profile holds the IdP session,
+   *  so keeping it is the choice that needs asking for, not the other way round. */
+  deleteAccount: (id: number, forgetProfile = true) =>
+    request<{ profile_removed: boolean }>(`/accounts/${id}?forget_profile=${forgetProfile}`, { method: 'DELETE' }),
+
+  orphanProfiles: () => request<OrphanProfiles>('/profiles/orphans'),
+  deleteOrphanProfiles: (keys: string[]) => post<{ removed: number }>('/profiles/orphans/delete', { keys }),
 
   checkIn: (id: number) => post<Outcome>(`/accounts/${id}/check-in`),
   checkInMany: (accountIds: number[]) => post<Record<string, Outcome>>('/check-in', { account_ids: accountIds }),
@@ -129,6 +187,11 @@ export const api = {
       `/accounts/${id}/browser-login`,
       { headless, set_password: true },
     ),
+
+  /** Load an exported IdP session into an OAuth account's browser profile — the
+   *  server-deployment path for a box with no desktop to open a login window on. */
+  injectIdpCookies: (id: number, cookies: string, verify = true) =>
+    post<IdpInjection>(`/accounts/${id}/idp-cookies`, { cookies, verify }),
 
   promo: () => request<{ card: Promo | null }>('/promos'),
   dismissPromo: (id: string) => post<void>(`/promos/${encodeURIComponent(id)}/dismiss`),

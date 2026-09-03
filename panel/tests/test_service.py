@@ -787,6 +787,126 @@ def test_a_site_whose_day_starts_at_0830_is_not_due_all_night():
 	assert scheduler.due(_account(session='s', checkin_after='08:30', last_success=True, last_run_at=before)) is True
 
 
+@pytest.fixture
+def auth(monkeypatch):
+	"""Stub the two calls a credential check makes: authenticate, and the JWT exchange."""
+	box = {
+		'user': {'id': 4242, 'username': 'alice', 'quota': 1_000_000},
+		'reason': None,
+		'refresh': ('token-1', 'rotated-cookie', {}),  # (access token, rotated cookie, user)
+	}
+	seen: dict = {}
+
+	async def authenticate(base_url, *, session=None, access_token=None, api_user=None):
+		seen.update(session=session, access_token=access_token, api_user=api_user)
+		return box['user'], box['reason']
+
+	async def refresh_access(base_url, refresh):
+		seen['spent'] = refresh
+		return box['refresh']
+
+	monkeypatch.setattr(newapi, 'authenticate', authenticate)
+	monkeypatch.setattr(newapi, 'refresh_access', refresh_access)
+	return box, seen
+
+
+async def test_verifying_a_paste_stores_the_id_the_site_wants_back(store, service, stub, auth):
+	"""`api_user` arrives in the response that proves the credential works, so nobody
+	should have to read it out of their own localStorage."""
+	_, seen = auth
+	account = store.create(name='A', base_url='https://x.test', login_method='session', session='pasted')
+
+	check = await service.verify_credential(account.id)
+
+	assert (check.ok, check.kind, check.api_user, check.username) == (True, 'session', '4242', 'alice')
+	assert check.quota == 2.0
+	assert seen['session'] == 'pasted'
+	assert store.get(account.id).api_user == '4242'
+
+
+async def test_a_refresh_cookie_is_picked_over_a_session_and_its_replacement_stored(store, service, stub, auth):
+	"""The exchange spends the cookie, so the rotated value has to land in the database in
+	the same breath — not on the way out."""
+	box, seen = auth
+	_, sbox = stub
+	sbox['site'] = newapi.SiteInfo(base_url='https://x.test', refresh_path='/api/user/auth/refresh')
+	account = store.create(name='A', base_url='https://x.test', login_method='session')
+	candidates = [
+		newapi.PastedCredential('site-session', 'session'),
+		newapi.PastedCredential('refresh-cookie', newapi.REFRESH_COOKIE),
+	]
+
+	check = await service.verify_credential(account.id, candidates)
+
+	assert (check.ok, check.kind) == (True, newapi.REFRESH_COOKIE), 'the probe, not the paste, picks'
+	assert seen['spent'] == 'refresh-cookie'
+	assert seen['access_token'] == 'Bearer token-1'
+	assert store.get(account.id).session == 'rotated-cookie'
+
+
+async def test_a_dead_refresh_cookie_still_leaves_the_rotation_stored(store, service, stub, auth):
+	box, _ = auth
+	_, sbox = stub
+	sbox['site'] = newapi.SiteInfo(base_url='https://x.test', refresh_path='/api/user/auth/refresh')
+	box['refresh'] = (None, 'rotated-anyway', {})
+	account = store.create(name='A', base_url='https://x.test', login_method='session', session='refresh-cookie')
+
+	check = await service.verify_credential(
+		account.id, [newapi.PastedCredential('refresh-cookie', newapi.REFRESH_COOKIE)]
+	)
+
+	assert check.ok is False and '换不到访问令牌' in check.reason
+	assert store.get(account.id).session == 'rotated-anyway', 'a failed check must not leave a spent cookie'
+
+
+async def test_a_missing_api_user_is_reported_as_itself_not_as_a_bad_credential(store, service, stub, auth):
+	"""A fork that validates `new-api-user` 401s a perfectly live session. Saying 凭据无效
+	would send someone off to re-export a cookie that was never the problem."""
+	box, _ = auth
+	box['user'], box['reason'] = None, 'New-Api-User header not provided'
+	account = store.create(name='A', base_url='https://x.test', login_method='session', session='live')
+
+	check = await service.verify_credential(account.id)
+
+	assert (check.ok, check.needs_api_user) == (False, True)
+	assert 'API User' in check.reason and '凭据本身没问题' in check.reason
+
+
+async def test_a_credential_that_authenticates_nothing_says_so(store, service, stub, auth):
+	box, _ = auth
+	box['user'], box['reason'] = None, '无权进行此操作，未登录且未提供 access token'
+	account = store.create(name='A', base_url='https://x.test', login_method='session', session='stale')
+
+	check = await service.verify_credential(account.id)
+
+	assert (check.ok, check.needs_api_user) == (False, False)
+	assert '登录不了' in check.reason and '未登录' in check.reason
+
+
+async def test_an_unreachable_site_does_not_report_a_bad_credential(store, service, stub, auth, monkeypatch):
+	"""A probe that failed says nothing about the paste, and ADR-0010 says a WAF can be the
+	one refusing. Blaming the credential would be evidence-free."""
+	account = store.create(name='A', base_url='https://x.test', login_method='session', session='pasted')
+
+	async def boom(base_url):
+		raise RuntimeError('WAF challenge')
+
+	monkeypatch.setattr(newapi, 'probe', boom)
+
+	check = await service.verify_credential(account.id)
+
+	assert check.ok is False and '无法访问站点' in check.reason and 'WAF' in check.reason
+	assert store.get(account.id).session == 'pasted', 'the account is saved either way'
+
+
+async def test_verifying_without_any_credential_is_refused_not_attempted(store, service, stub, auth):
+	account = store.create(name='A', base_url='https://x.test', login_method='session')
+
+	check = await service.verify_credential(account.id)
+
+	assert check.ok is False and '没有存任何会话凭据' in check.reason
+
+
 async def test_scheduler_run_once_only_touches_due_accounts(store, service, stub, capsys):
 	calls, _ = stub
 	store.create(name='ready', base_url='https://x.test', username='a', password='pw')
@@ -798,3 +918,340 @@ async def test_scheduler_run_once_only_touches_due_accounts(store, service, stub
 	assert len(results) == 1 and len(calls) == 1
 	assert 'OK' in capsys.readouterr().out
 	assert await scheduler.run_once(store, service) == {}, 'already done today'
+
+
+async def test_an_access_token_is_verified_as_a_header_not_a_cookie(store, service, stub, auth):
+	"""The credential a headless deployment reaches for first, and the one that used to be
+	saved unverified: it arrives in its own field, so `_pasted` never saw it."""
+	_, seen = auth
+	account = store.create(
+		name='A', base_url='https://x.test', login_method='access_token', access_token='sk-real'
+	)
+
+	check = await service.verify_credential(account.id)
+
+	assert (check.ok, check.kind) == (True, 'access_token')
+	assert seen['access_token'] == 'sk-real', 'sent bare in the header, not as a cookie'
+	assert seen['session'] is None
+	assert store.get(account.id).api_user == '4242'
+
+
+async def test_a_stale_session_is_not_verified_in_place_of_the_token(store, service, stub, auth):
+	"""Switching an account to a token leaves the old session in its column. Checking that
+	instead would report a dead cookie as this account's verdict."""
+	_, seen = auth
+	account = store.create(
+		name='A',
+		base_url='https://x.test',
+		login_method='access_token',
+		access_token='sk-real',
+		session='left-over-from-before',
+	)
+
+	check = await service.verify_credential(account.id)
+
+	assert (check.ok, check.kind) == (True, 'access_token')
+	assert seen['access_token'] == 'sk-real'
+	assert seen['session'] is None, 'the declared login method decides, not a non-empty column'
+
+
+async def test_an_access_token_account_with_no_token_says_so(store, service, stub, auth):
+	account = store.create(name='A', base_url='https://x.test', login_method='access_token')
+
+	check = await service.verify_credential(account.id)
+
+	assert check.ok is False
+	assert check.kind == 'access_token'
+	assert '访问令牌' in check.reason
+
+
+async def test_a_stale_pasted_token_does_not_block_its_own_browser_fallback(
+	service, store, stub, browser, monkeypatch
+):
+	"""An OAuth account may now hold a site token *beside* its IdP login, so the token can
+	be the thing that died. `_client` sends both credentials at once and New API answers a
+	rejected `Authorization` header rather than falling back to the cookie (measured on
+	gorouter.app: 200 + `access token 无效`), so carrying the dead token into the retry
+	would make the browser hop fail on the credential it just replaced."""
+	calls, box = stub
+	box['site'] = newapi.SiteInfo(base_url='https://x.test', checkin_path='/api/user/checkin')
+	outcomes = [
+		newapi.Outcome(False, error='access token 无效'),  # the pasted token has expired
+		newapi.Outcome(True, True, 1.0, 1.25, session='oauth-session'),  # the browser's session works
+	]
+
+	async def check_in(login, site=None):
+		calls.append(login)
+		return outcomes.pop(0) if outcomes else newapi.Outcome(False, error='unexpected third attempt')
+
+	monkeypatch.setattr(newapi, 'check_in', check_in)
+	account = store.create(
+		name='A', base_url='https://x.test', login_method='github', access_token='sk-expired'
+	)
+
+	outcome = await service.check_in(account.id)
+
+	assert outcome.success is True
+	assert len(calls) == 2, 'the HTTP attempt, then the retry after the browser hop'
+	assert calls[0].access_token == 'sk-expired', 'the paste is what gets tried first'
+	assert calls[1].access_token is None, 'the dead token must not ride along with the fresh session'
+	assert calls[1].session == 'oauth-session'
+
+
+# --- deleting an account, and the profile that outlived it ----------------------------------
+
+
+def _profile(root, provider, name):
+	d = root / provider / name
+	(d / 'Default').mkdir(parents=True)
+	(d / 'Default' / 'Cookies').write_bytes(b'an IdP session')
+	return d
+
+
+def test_deleting_an_account_takes_its_profile_by_default(service, store, tmp_path, monkeypatch):
+	"""What the delete button used to leave behind. The profile holds the *IdP* session — the
+	whole github.com login — so an account deleted from the database left its credential on
+	disk with nothing on any screen naming the directory."""
+	monkeypatch.setenv('CHECKIN_BROWSER_PROFILE_DIR', str(tmp_path))
+	prof = _profile(tmp_path, 'github', 'gone')
+	account_id = store.create(name='gone', base_url='https://x.test', login_method='github').id
+
+	assert service.delete(account_id) is True
+	assert store.get(account_id) is None
+	assert not prof.exists(), 'the IdP session must not outlive the account'
+
+
+def test_keeping_a_profile_is_possible_and_says_so(service, store, tmp_path, monkeypatch):
+	monkeypatch.setenv('CHECKIN_BROWSER_PROFILE_DIR', str(tmp_path))
+	prof = _profile(tmp_path, 'github', 'kept')
+	account_id = store.create(name='kept', base_url='https://x.test', login_method='github').id
+
+	assert service.delete(account_id, forget_profile=False) is False
+	assert store.get(account_id) is None
+	assert prof.exists(), 'asked to keep it, so it stays'
+
+
+def test_the_row_goes_even_if_the_profile_cannot(service, store, tmp_path, monkeypatch):
+	"""Windows keeps files open. If removing the directory raises, the account must already be
+	gone — the alternative is a row that survives its own deletion because a browser had a
+	lock on a cache file."""
+	monkeypatch.setenv('CHECKIN_BROWSER_PROFILE_DIR', str(tmp_path))
+	_profile(tmp_path, 'github', 'locked')
+	account_id = store.create(name='locked', base_url='https://x.test', login_method='github').id
+
+	import panel.browser_login as bl
+
+	def boom(*_a, **_kw):
+		raise OSError('being used by another process')
+
+	monkeypatch.setattr(bl, 'forget_profile', boom)
+	with pytest.raises(OSError):
+		service.delete(account_id)
+	assert store.get(account_id) is None, 'the row goes first, so this cannot half-delete'
+
+
+def test_orphans_are_the_profiles_no_account_claims(service, store, tmp_path, monkeypatch):
+	monkeypatch.setenv('CHECKIN_BROWSER_PROFILE_DIR', str(tmp_path))
+	_profile(tmp_path, 'github', 'live')
+	_profile(tmp_path, 'github', 'orphan')
+	_profile(tmp_path, 'linuxdo', 'renamed-away')
+	store.create(name='live', base_url='https://x.test', login_method='github')
+
+	keys = {o.key for o in service.orphan_profiles()}
+
+	assert keys == {'github/orphan', 'linuxdo/renamed-away'}
+	assert all(o.bytes > 0 for o in service.orphan_profiles()), 'the size is what makes it worth clearing'
+
+
+def test_a_name_that_sanitises_to_the_same_directory_is_not_an_orphan(service, store, tmp_path, monkeypatch):
+	"""`profile_name` is part of the match. An account called `a@b.com` owns `a_b.com`, and
+	comparing raw names would offer a live account's profile up for deletion."""
+	monkeypatch.setenv('CHECKIN_BROWSER_PROFILE_DIR', str(tmp_path))
+	_profile(tmp_path, 'github', 'a_b.com')
+	store.create(name='a@b.com', base_url='https://x.test', login_method='github')
+
+	assert service.orphan_profiles() == []
+
+
+def test_an_old_layout_profile_is_told_apart_from_a_provider_directory(service, store, tmp_path, monkeypatch):
+	"""A profile keyed by site sits directly under the root, so its Chrome subdirectories
+	would otherwise be read as account names — which is how one listing reported `Default` and
+	`ShaderCache` as three separate orphaned accounts."""
+	monkeypatch.setenv('CHECKIN_BROWSER_PROFILE_DIR', str(tmp_path))
+	old = tmp_path / 'keyed-by-site'
+	(old / 'Default').mkdir(parents=True)
+	(old / 'ShaderCache').mkdir()
+	(old / 'Default' / 'Cookies').write_bytes(b'x')
+	_profile(tmp_path, 'github', 'orphan')
+
+	found = {o.key: o for o in service.orphan_profiles()}
+
+	assert set(found) == {'keyed-by-site', 'github/orphan'}
+	assert found['keyed-by-site'].old_layout is True
+	assert found['keyed-by-site'].provider is None
+	assert found['github/orphan'].old_layout is False
+
+
+def test_deleting_orphans_takes_only_what_was_listed(service, store, tmp_path, monkeypatch):
+	monkeypatch.setenv('CHECKIN_BROWSER_PROFILE_DIR', str(tmp_path))
+	go = _profile(tmp_path, 'github', 'go')
+	stay = _profile(tmp_path, 'github', 'stay')
+
+	assert service.delete_orphan_profiles(['github/go']) == 1
+	assert not go.exists()
+	assert stay.exists(), 'an orphan not named must not be swept up with it'
+
+
+def test_deleting_orphans_skips_one_that_stopped_being_an_orphan(service, store, tmp_path, monkeypatch):
+	"""The list is a snapshot and this is `rmtree`. If an account was added back under that
+	name while the dialog sat open, the profile is in use again."""
+	monkeypatch.setenv('CHECKIN_BROWSER_PROFILE_DIR', str(tmp_path))
+	prof = _profile(tmp_path, 'github', 'reclaimed')
+	store.create(name='reclaimed', base_url='https://x.test', login_method='github')
+
+	assert service.delete_orphan_profiles(['github/reclaimed']) == 0
+	assert prof.exists(), 'the profile of a live account must survive a stale list'
+
+
+def test_deleting_orphans_refuses_a_key_that_climbs_out(service, store, tmp_path, monkeypatch):
+	monkeypatch.setenv('CHECKIN_BROWSER_PROFILE_DIR', str(tmp_path / 'root'))
+	(tmp_path / 'root').mkdir()
+	outside = tmp_path / 'precious'
+	outside.mkdir()
+	(outside / 'keep.txt').write_text('not a profile')
+
+	assert service.delete_orphan_profiles(['../precious', '../../precious']) == 0
+	assert outside.exists() and (outside / 'keep.txt').exists()
+
+
+async def test_a_visit_account_renews_its_own_card_from_the_idp_session(service, store, stub, monkeypatch):
+	"""A `visit` account with no password is not stuck when its site session lapses.
+
+	The site session is what the whole mechanism runs on — load an authenticated page and
+	the bonus is collected — and no `visit` run ever mints one, so the day it expires the
+	account goes dark. But the *IdP* session in the same profile outlives it by weeks, and
+	the hop that trades one for the other is redirects and a consent click: nothing a
+	headless run cannot do. Measured on anyrouter.top, one card carried 13 days.
+
+	Before this, the only branch that could re-login required a password an OAuth-only
+	account is unable to have (`PUT /api/user/self` verifies `original_password`), so the
+	owner was told to check credentials they never set.
+	"""
+	import panel.browser_login as browser_login
+
+	logins, visits = [], []
+	user = {'id': 169050, 'username': 'linuxdo_1', 'quota': 87_500_000}
+
+	async def visit(**kw):
+		visits.append(kw)
+		if len(visits) == 1:  # the lapsed card: the page loads, nobody is logged in
+			return browser_login.BrowserVisit(before=None, after=None, session=None, checkin_at=None, held=True)
+		return browser_login.BrowserVisit(
+			before={'id': 169050, 'quota': 87_000_000}, after=user, session='fresh-card', checkin_at=None, held=True
+		)
+
+	async def login(**kw):
+		logins.append(kw)
+		return browser_login.BrowserLogin('fresh-card', user)
+
+	monkeypatch.setattr(browser_login, 'browser_visit', visit)
+	monkeypatch.setattr(browser_login, 'browser_login', login)
+	account = store.create(name='any-ld', base_url='https://x.test', login_method='linuxdo', mechanism='visit')
+
+	outcome = await service.check_in(account.id)
+
+	assert outcome.success, 'the renewal is the whole point; a lapsed card is not a dead account'
+	assert len(logins) == 1, 'exactly one OAuth hop — it costs a browser launch'
+	assert logins[0]['headless'] is True, 'no window: the IdP cookie is already in the profile'
+	assert len(visits) == 2, 'and the visit is retried with the new card'
+	assert store.get(account.id).session == 'fresh-card', 'the won card is kept, not thrown away'
+
+
+async def test_a_visit_account_with_a_password_does_not_burn_an_oauth_hop(service, store, stub, monkeypatch):
+	"""The counterpart: `browser_visit` renews a password account by itself, inside the one
+	launch it already has. Adding a second launch for those would double the cost of every
+	lapsed day for nothing."""
+	import panel.browser_login as browser_login
+
+	logins = []
+
+	async def visit(**kw):
+		return browser_login.BrowserVisit(
+			before=None, after={'id': 216481, 'quota': 87_500_000}, session='sess', checkin_at=None, held=True
+		)
+
+	async def login(**kw):
+		logins.append(kw)
+		raise AssertionError('a password account must not reach the OAuth renewal')
+
+	monkeypatch.setattr(browser_login, 'browser_visit', visit)
+	monkeypatch.setattr(browser_login, 'browser_login', login)
+	account = store.create(
+		name='any-pw', base_url='https://x.test', username='someone', password='pw', mechanism='visit'
+	)
+
+	outcome = await service.check_in(account.id)
+
+	assert outcome.success
+	assert logins == [], 'the password branch inside browser_visit already handled it'
+
+
+async def test_a_renewal_that_cannot_land_still_says_what_would_fix_it(service, store, stub, monkeypatch):
+	"""When the IdP session has lapsed too, the headless hop cannot help and the owner has
+	to open a window once. So a failed renewal must not swallow the advice — and must not
+	blame a password an OAuth-only account never had."""
+	import panel.browser_login as browser_login
+
+	visits = []
+
+	async def visit(**kw):
+		visits.append(kw)
+		return browser_login.BrowserVisit(before=None, after=None, session=None, checkin_at=None, held=True)
+
+	tried = []
+
+	async def login(**kw):
+		tried.append(kw)
+		raise RuntimeError('linuxdo 需要先人工登录一次')
+
+	monkeypatch.setattr(browser_login, 'browser_visit', visit)
+	monkeypatch.setattr(browser_login, 'browser_login', login)
+	account = store.create(name='any-ld', base_url='https://x.test', login_method='linuxdo', mechanism='visit')
+
+	outcome = await service.check_in(account.id)
+
+	assert len(tried) == 1, 'the renewal has to be attempted, or this tests nothing'
+	assert outcome.success is False
+	assert '浏览器登录' in outcome.error, 'the one thing that fixes a lapsed IdP session'
+	assert '账号密码' not in outcome.error, 'never blame a credential this account cannot have'
+	assert len(visits) == 1, 'no retry when the renewal did not land — the second visit would fail alike'
+
+
+async def test_a_renewal_is_only_attempted_when_the_card_is_actually_gone(service, store, stub, monkeypatch):
+	"""An OAuth `visit` account whose card is still live must not pay for an OAuth hop it
+	does not need. This is the 13-day case: the same card, reused every day, no login."""
+	import panel.browser_login as browser_login
+
+	logins = []
+
+	async def visit(**kw):
+		return browser_login.BrowserVisit(
+			before={'id': 169050, 'quota': 87_000_000},
+			after={'id': 169050, 'quota': 87_500_000},
+			session='same-old-card',
+			checkin_at=None,
+			held=True,
+		)
+
+	async def login(**kw):
+		logins.append(kw)
+		raise AssertionError('a live card must never trigger a renewal')
+
+	monkeypatch.setattr(browser_login, 'browser_visit', visit)
+	monkeypatch.setattr(browser_login, 'browser_login', login)
+	account = store.create(name='any-ld', base_url='https://x.test', login_method='linuxdo', mechanism='visit')
+
+	outcome = await service.check_in(account.id)
+
+	assert (outcome.success, outcome.checked_in) == (True, True), 'the balance moved: the bonus landed'
+	assert logins == [], 'no OAuth round trip on a day the card still works'

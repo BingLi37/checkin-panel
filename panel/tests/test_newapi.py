@@ -1,4 +1,5 @@
 """panel.newapi against a fake New API instance — no network, no browser."""
+import json
 from datetime import datetime
 
 import httpx
@@ -36,6 +37,9 @@ class FakeSite:
 		self.status_path = None
 		self.nests_status = False  # seekai.cc puts it under `stats` with a month's calendar
 		self.checkin_enabled = None  # what /api/status advertises, when it says anything
+		# anyrouter.top's WAF answers /api/status itself with 200 text/html — measured: 4321
+		# bytes opening `<html><script>var arg1='D468F8...'`. Not a 403, so nothing raises.
+		self.waf_hides_status = False
 
 	def _authed(self, request) -> bool:
 		if self.refresh:  # JWT forks accept nothing but the Bearer token
@@ -49,6 +53,12 @@ class FakeSite:
 		self.calls.append(f'{method} {path}')
 
 		if path == '/api/status':
+			if self.waf_hides_status:
+				return httpx.Response(
+					200,
+					text="<html><script>var arg1='D468F87D7C998A5FFCE060545311944B';</script></html>",
+					headers={'content-type': 'text/html; charset=utf-8'},
+				)
 			status = {'quota_per_unit': 500000, **{f'{p}_oauth': True for p in self.oauth}}
 			if self.checkin_enabled is not None:
 				status['checkin_enabled'] = self.checkin_enabled
@@ -173,6 +183,39 @@ def test_client_ignores_an_ambient_socks_proxy(monkeypatch):
 	assert client._mounts == {}, 'the environment must not route panel requests'
 
 
+def _exported(*cookies) -> str:
+	"""A cookie jar in the shape a browser extension exports.
+
+	The extra keys are the point: every row carries `"session": false`, meaning "is a session
+	cookie" — a boolean sitting under the same name as the credential this code looks for.
+	"""
+	return json.dumps(
+		[
+			{
+				'domain': '.x.test',
+				'expirationDate': 1799999999.5,
+				'hostOnly': False,
+				'httpOnly': True,
+				'path': '/',
+				'sameSite': 'lax',
+				'secure': True,
+				'session': False,
+				'storeId': None,
+				**cookie,
+			}
+			for cookie in cookies
+		]
+	)
+
+
+JAR_WITH_SESSION = _exported({'name': 'session', 'value': 'MTc1.REAL'}, {'name': '_ga', 'value': 'GA1.1.x'})
+JAR_WITH_REFRESH = _exported({'name': 'new_api_refresh', 'value': 'REFRESH-XYZ'}, {'name': 'cf_clearance', 'value': 'c'})
+JAR_WITH_NEITHER = _exported({'name': '_ga', 'value': 'GA1.1.x'}, {'name': 'cf_clearance', 'value': 'c'})
+ONE_EXPORTED_COOKIE = json.dumps(
+	{'domain': '.x.test', 'name': 'session', 'path': '/', 'session': False, 'value': 'MTc1.REAL'}
+)
+
+
 @pytest.mark.parametrize(
 	'raw, expected',
 	[
@@ -182,10 +225,68 @@ def test_client_ignores_an_ambient_socks_proxy(monkeypatch):
 		('[{"name": "session", "value": "abc123"}]', 'abc123'),
 		('  ', None),
 		(None, None),
+		# An exported jar, which is what someone pastes when told "copy your cookies".
+		(JAR_WITH_SESSION, 'MTc1.REAL'),
+		# A JWT fork sets no `session` at all: the credential is the refresh cookie, and
+		# missing it used to store the whole 200-char document as the credential.
+		(JAR_WITH_REFRESH, 'REFRESH-XYZ'),
+		# One row of that jar, copied alone. `"session": false` is a boolean, not a value —
+		# reading it as one fell through to the first field in the object, the domain.
+		(ONE_EXPORTED_COOKIE, 'MTc1.REAL'),
 	],
 )
 def test_parse_session_shapes(raw, expected):
 	assert newapi.parse_session(raw) == expected
+
+
+def test_a_jar_with_no_credential_is_not_a_credential():
+	"""Understood as JSON, nothing in it authenticates: the answer is None, never the blob.
+
+	Handing back the document made the site answer 凭据无效, which reads as "your session
+	expired" — a paste-format problem wearing a credential problem's error message.
+	"""
+	assert newapi.parse_session(JAR_WITH_NEITHER) != JAR_WITH_NEITHER
+	assert newapi.parse_session('[{"name": "_ga", "value": "GA1.1.x"}]') != '[{"name": "_ga", "value": "GA1.1.x"}]'
+
+
+@pytest.mark.parametrize(
+	'raw, expected',
+	[
+		(JAR_WITH_SESSION, [('MTc1.REAL', 'session')]),
+		(JAR_WITH_REFRESH, [('REFRESH-XYZ', 'new_api_refresh')]),
+		(ONE_EXPORTED_COOKIE, [('MTc1.REAL', 'session')]),
+		('abc123', [('abc123', 'session')]),
+		# Both in one jar: offered in a fixed order, and which one the fork wants is
+		# decided later against a probe (a JWT fork ignores the session entirely).
+		(
+			_exported({'name': 'new_api_refresh', 'value': 'R'}, {'name': 'session', 'value': 'S'}),
+			[('S', 'session'), ('R', 'new_api_refresh')],
+		),
+	],
+)
+def test_credentials_from_paste_names_the_cookie(raw, expected):
+	found = newapi.credentials_from_paste(raw)
+	assert [(c.value, c.cookie_name) for c in found] == expected
+
+
+@pytest.mark.parametrize('raw', ['', '   ', None, JAR_WITH_NEITHER, '[]', '{"nope": 1}'])
+def test_credentials_from_paste_refuses_what_it_cannot_use(raw):
+	"""Strict where parse_session is lenient: a paste that carries no credential has to say
+	so now, while the person is still looking at the form."""
+	with pytest.raises(ValueError):
+		newapi.credentials_from_paste(raw)
+
+
+def test_a_refused_paste_says_what_it_did_find():
+	"""The message has to be actionable — naming the cookies it saw is what tells someone
+	they exported from the wrong tab."""
+	with pytest.raises(ValueError, match='_ga'):
+		newapi.credentials_from_paste(JAR_WITH_NEITHER)
+
+
+def test_broken_json_is_reported_as_broken_json():
+	with pytest.raises(ValueError, match='JSON'):
+		newapi.credentials_from_paste('[{"name": "session", "value": ')
 
 
 async def test_probe_reports_capabilities_and_login_bonus(site):
@@ -235,6 +336,24 @@ async def test_probe_records_a_status_route_only_when_one_answers(site):
 
 	site.status_path = None  # same check-in route, but GET now falls through to the admin 200
 	assert (await newapi.probe('https://x.test')).status_path is None
+
+
+async def test_an_unreadable_status_leaves_the_login_methods_empty(site):
+	"""anyrouter.top: the WAF answers `/api/status` with 200 HTML, so there is nothing to read.
+
+	Reporting `('password',)` there is the bug this guards — it reads as a *finding* that the
+	site has no OAuth, and the form dutifully hid the LinuxDO login that site really has.
+	Empty is the only honest answer, and every reader treats it as unknown."""
+	site.waf_hides_status = True
+
+	info = await newapi.probe('https://x.test')
+
+	assert info.login_methods == (), 'no reading, so no claim — not even password'
+	# The route probe is a POST against the candidates and never touches /api/status, so a
+	# WAF over the status page must not cost us the mechanism.
+	assert info.mechanism == 'login_bonus'
+	assert info.quota_per_unit == newapi.DEFAULT_QUOTA_PER_UNIT, 'the divisor falls back'
+	assert (info.turnstile, info.checkin_enabled) == (False, None), 'absent, not decided'
 
 
 async def test_check_in_reports_the_amount_the_site_named(site):

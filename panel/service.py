@@ -10,10 +10,13 @@ a password (ADR-0009). Those cost one browser launch a day; everyone else costs
 a handful of HTTP requests.
 """
 import asyncio
+import os
 import re
+import shutil
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 from panel import newapi
@@ -21,8 +24,76 @@ from panel.store import Account, AccountStore
 
 CONCURRENCY = 4
 BROWSER_METHODS = ('linuxdo', 'github')  # keep in sync with browser_login.PROVIDER_BUTTONS
+# Directories Chrome creates *inside* a profile. Their presence is what says a directory is
+# a profile rather than a provider holding profiles — the only way to tell an old-layout
+# leftover from a provider directory, since both are just a name under the root.
+CHROME_OWN_DIRS = frozenset(
+	{
+		'Default',
+		'ShaderCache',
+		'GrShaderCache',
+		'GraphiteDawnCache',
+		'component_crx_cache',
+		'extensions_crx_cache',
+		'segmentation_platform',
+	}
+)
+
+
+def _profile_root() -> Path:
+	return Path(os.getenv('CHECKIN_BROWSER_PROFILE_DIR', '.browser_profiles'))
+
+
+def _is_a_profile(path: Path) -> bool:
+	return any(child.name in CHROME_OWN_DIRS for child in path.iterdir() if child.is_dir())
+
+
+def _size(path: Path) -> int:
+	return sum(f.stat().st_size for f in path.rglob('*') if f.is_file())
+
+
+@dataclass
+class OrphanProfile:
+	"""A browser profile on disk that no account claims.
+
+	`provider` is None for an old-layout profile sitting directly under the root, which is
+	also what makes `key` the right thing to send back: it is the path relative to the root
+	either way, so one string addresses both shapes.
+	"""
+
+	name: str
+	provider: Optional[str]
+	bytes: int
+	old_layout: bool
+
+	@property
+	def key(self) -> str:
+		return f'{self.provider}/{self.name}' if self.provider else self.name
 TURNSTILE_MISSING = re.compile(r'turnstile', re.I)
 NOT_JSON = re.compile(r'非 JSON 响应')  # a WAF answered instead of the API
+
+
+@dataclass
+class CredentialCheck:
+	"""What one verification of a stored credential learned.
+
+	Not an `Outcome`: nothing was checked in. This says whether a credential authenticates,
+	which is worth asking the moment one is pasted rather than a day later in a failed run.
+
+	`ok=False` is not always the credential's fault, and the difference is the whole point of
+	`needs_api_user`: a fork that validates the `new-api-user` header refuses a live session
+	that lacks the account's id, and telling someone their cookie is dead sends them to fetch
+	one that was never the problem (ADR-0010 is the same shape — a WAF can refuse a good
+	credential, which is why a failed check is reported and not treated as an error).
+	"""
+
+	ok: bool
+	kind: Optional[str] = None  # which cookie authenticated: 'session' | 'new_api_refresh'
+	api_user: Optional[str] = None
+	username: Optional[str] = None
+	quota: Optional[float] = None
+	needs_api_user: bool = False
+	reason: Optional[str] = None
 
 
 def _total(user: Optional[dict], quota_per_unit: float) -> Optional[float]:
@@ -241,19 +312,37 @@ class CheckInService:
 		from panel.browser_login import browser_visit
 
 		started = time.time()
-		visit = await browser_visit(
-			base_url=account.base_url,
-			account_name=account.name,
-			provider=account.login_method,
-			username=account.username,
-			password=account.password,
-			headless=True,
-		)
+
+		async def visit_once():
+			return await browser_visit(
+				base_url=account.base_url,
+				account_name=account.name,
+				provider=account.login_method,
+				username=account.username,
+				password=account.password,
+				headless=True,
+			)
+
+		visit = await visit_once()
+		if not visit.after and account.login_method in BROWSER_METHODS:
+			# The site session has lapsed and this account has no password to renew it with —
+			# but the *IdP* session in the same profile normally outlives it by weeks, so the
+			# renewal needs no human at all: run the OAuth hop, then visit again.
+			#
+			# Measured on anyrouter.top: one card minted this way carried 13 consecutive daily
+			# runs (created 08-17, still the live cookie on 08-30, `updated` never touched),
+			# because a `visit` run reuses the card and never mints one. Without this branch
+			# that account went dark the day the card expired, reporting a password the owner
+			# was never able to set — and the only fix was a hand-pressed button.
+			renewed = await self._renew_visit_session(account)
+			if renewed:
+				visit = await visit_once()
 		before, after = visit.before, visit.after
 		if not after:
 			# Do not blame a password the account may not even have: an OAuth identity gets
-			# here whenever the profile's site session has lapsed, and the fix for that is
-			# one visible browser login, not a credential the owner never set.
+			# here whenever the profile's site session has lapsed *and* the OAuth renewal
+			# above could not land either, and the fix for that is one visible browser
+			# login, not a credential the owner never set.
 			return newapi.Outcome(
 				False,
 				error='浏览器里也没进到已登录状态：'
@@ -307,6 +396,38 @@ class CheckInService:
 			**common,
 		)
 
+	async def _renew_visit_session(self, account: Account) -> bool:
+		"""Mint a fresh site session for a `visit` account from the IdP session it already has.
+
+		Headless on purpose: the IdP cookie is in the profile, so the whole hop is redirects
+		and a consent click — the two things an unattended run can do. A window would only be
+		needed if the IdP session had lapsed too, and `browser_login` says so in its own words
+		when that happens (it separates 'the IdP wants a human' from 'nothing is moving').
+
+		Swallows the failure rather than raising: the caller has a second visit to attempt and
+        a better message to report either way, and a renewal that could not land is not itself
+		the thing the owner asked for. The credential is stored because it costs nothing here
+		and the `endpoint` path would otherwise have to win it again.
+		"""
+		from panel.browser_login import browser_login
+
+		try:
+			result = await browser_login(
+				base_url=account.base_url,
+				provider=account.login_method,
+				account_name=account.name,
+				headless=True,
+			)
+		except Exception:
+			return False
+		if result.credential:
+			self.store.update(
+				account.id,
+				session=result.credential,
+				api_user=str(result.user.get('id') or '') or None,
+			)
+		return bool(result.credential)
+
 	async def _with_turnstile(
 		self, account: Account, site: newapi.SiteInfo, login: newapi.Login, failed: newapi.Outcome
 	) -> newapi.Outcome:
@@ -352,7 +473,12 @@ class CheckInService:
 		api_user = user.get('id') or account.api_user
 		self.store.update(account.id, session=session, api_user=api_user)
 		if site.checkin_path:  # the login only got us in; the check-in is still a POST
-			login = replace(self._login(account), session=session, api_user=api_user)
+			# Drop the stored access token: the browser hop just won a fresh session, and
+			# `_client` sends both credentials at once — an `Authorization` header the site
+			# rejects is fatal even beside a good cookie, because New API's middleware
+			# answers "access token 无效" instead of falling back to the session (measured on
+			# gorouter.app). A stale pasted token would otherwise block its own fallback.
+			login = replace(self._login(account), session=session, api_user=api_user, access_token=None)
 			outcome = await newapi.check_in(login, site)
 			if not outcome.success and site.turnstile_key and TURNSTILE_MISSING.search(outcome.error or ''):
 				# Mint in a *fresh* context (that is what `_with_turnstile` does): this
@@ -413,6 +539,222 @@ class CheckInService:
 		"""What does this site support? Used by the add-account form so nothing
 		about a site has to be hardcoded. Public data only — no credentials needed."""
 		return await newapi.probe(base_url)
+
+	async def verify_credential(
+		self, account_id: int, candidates: Optional[list[newapi.PastedCredential]] = None
+	) -> CredentialCheck:
+		"""Does this account's stored credential authenticate? Persists what it learns.
+
+		Called right after a credential is saved, so a bad paste is reported while whoever
+		pasted it is still looking at the form rather than a day later in a failed run. Two
+		things are written here on purpose:
+
+		- **the rotated refresh cookie**, immediately. A JWT fork's refresh token is spent by
+		  the exchange, so a verification that did not store the replacement would leave the
+		  account holding a dead credential — the exact hazard `_attempt` guards against.
+		- **`api_user`**, which is the id a fork wants back as the `new-api-user` header. It
+		  arrives in the same response that proves the credential works, and the alternative
+		  is asking someone to read it out of their browser's localStorage.
+
+		`candidates` is every credential a paste contained; the probe decides which one this
+		fork actually uses, and the winner replaces what was stored. Without it, whatever is
+		already in the account is what gets checked.
+		"""
+		account = self.store.get(account_id)
+		if account is None:
+			return CredentialCheck(False, reason=f'账号 {account_id} 不存在')
+		try:
+			site = await newapi.probe(account.base_url)
+		except Exception as e:
+			return CredentialCheck(False, reason=f'无法访问站点，凭据没能验证：{newapi.why(e)}')
+
+		value, kind = account.session, 'session'
+		if candidates:
+			# A JWT fork authenticates only with its refresh cookie and ignores any session
+			# beside it; everywhere else it is the other way round. The paste cannot know
+			# which — the probe can.
+			wanted = newapi.REFRESH_COOKIE if site.refresh_path else 'session'
+			picked = next((c for c in candidates if c.cookie_name == wanted), candidates[0])
+			value, kind = picked.value, picked.cookie_name
+			if value != account.session:
+				self.store.update(account_id, session=value)
+		# An access-token account authenticates with a header rather than a cookie, and which
+		# of the two to check is decided by the **declared login method** — not by whichever
+		# column happens to be non-empty. A session left over from an earlier paste must not
+		# be what gets verified after someone switches the account over to a token.
+		token_account = account.login_method == 'access_token'
+		if token_account:
+			value, kind = account.access_token, 'access_token'
+		if not value:
+			return CredentialCheck(
+				False,
+				kind=kind,
+				reason='这个账号没有存访问令牌' if token_account else '这个账号没有存任何会话凭据',
+			)
+
+		access_token = account.access_token if token_account else None
+		if kind == newapi.REFRESH_COOKIE and site.refresh_path:
+			token, rotated, user = await newapi.refresh_access(account.base_url, value)
+			if rotated:  # spent on exchange: store the replacement before anything else can fail
+				self.store.update(account_id, session=rotated)
+			if not token:
+				return CredentialCheck(
+					False,
+					kind=kind,
+					reason='这个 refresh 凭据换不到访问令牌：到站点重新登录，再导出一次 cookie',
+				)
+			access_token = f'Bearer {token}'
+			data, reason = user or None, None
+			if not data:
+				data, reason = await newapi.authenticate(
+					account.base_url, access_token=access_token, api_user=account.api_user
+				)
+		elif token_account:
+			# Sent bare, not as a Bearer: New API compares the `Authorization` header against
+			# the user's own access token. A wrong one comes back **200 with success=false**
+			# on some forks, which is why `_self` weighs the body and not just the status.
+			data, reason = await newapi.authenticate(
+				account.base_url, access_token=access_token, api_user=account.api_user
+			)
+		else:
+			data, reason = await newapi.authenticate(
+				account.base_url, session=value, api_user=account.api_user
+			)
+
+		if data is None:
+			if reason and newapi.NEEDS_API_USER.search(reason):
+				# The credential is live; this fork also wants the account's own id, and
+				# without it every authenticated route 401s. Saying "凭据无效" here would
+				# send someone off to fetch a cookie that was never the problem.
+				return CredentialCheck(
+					False,
+					kind=kind,
+					needs_api_user=True,
+					reason='凭据本身没问题，但这个站点还要账号的用户 id：把 API User 填上（站点页面 localStorage 里的 user.id）',
+				)
+			return CredentialCheck(False, kind=kind, reason=f'这个凭据登录不了：{reason or "站点没有说明原因"}')
+
+		api_user = data.get('id')
+		if api_user and str(api_user) != (account.api_user or ''):
+			self.store.update(account_id, api_user=str(api_user))
+		return CredentialCheck(
+			True,
+			kind=kind,
+			api_user=str(api_user) if api_user else None,
+			username=data.get('username'),
+			quota=newapi.usd(data, site.quota_per_unit),
+		)
+
+	async def inject_idp_cookies(self, account_id: int, raw: str, *, verify: bool = True) -> 'IdpInjection':
+		"""Put an IdP session into this account's browser profile, so the daily headless
+		OAuth hop needs no human.
+
+		This is the server-deployment answer for an OAuth-only account: the site session in
+		the database is short-lived and renewed by that hop, while the *IdP* session it
+		renews from normally gets there through one visible window (ADR-0009) — which is the
+		one thing a headless box cannot offer. Injecting cookie values supplies it instead.
+
+		Copying a whole profile directory does not work and this does: Windows keeps the
+		profile's cookie-encryption key in `Local State`, DPAPI-bound to the Windows account,
+		so the file is unreadable elsewhere. Cookie *values* carry no such key — the
+		receiving browser encrypts them with its own.
+		"""
+		from panel.browser_login import inject_idp_cookies as inject
+
+		account = self.store.get(account_id)
+		if account is None:
+			raise RuntimeError(f'账号 {account_id} 不存在')
+		if account.login_method not in BROWSER_METHODS:
+			raise RuntimeError(
+				f'只有授权登录的账号需要注入 IdP 会话（当前是 {account.login_method}）：'
+				'密码 / 会话 Cookie 账号直接粘站点自己的 cookie 就够了'
+			)
+		result = await inject(
+			raw, provider=account.login_method, account_name=account.name, base_url=account.base_url, verify=verify
+		)
+		if result.credential:
+			# The verification logged in for real, so it came back with a live site session
+			# and the account's id. Storing them makes the account usable now rather than
+			# after the next scheduled run.
+			self.store.update(account_id, session=result.credential, api_user=str(result.api_user or '') or None)
+		return result
+
+	def delete(self, account_id: int, *, forget_profile: bool = True) -> bool:
+		"""Delete an account, and by default the browser profile that went with it.
+
+		Returns whether a profile was actually removed.
+
+		The profile is not a cache. It holds the *IdP* session — the whole github.com or
+		linux.do login — and until this existed, deleting an account left that on disk with
+		nothing on any screen naming the directory. The database row was the only thing the
+		delete button removed, so the credential outlived the account it belonged to.
+
+		Still a flag rather than unconditional, because the two mistakes are not the same
+		size: a profile deleted by accident costs one visible login, while a profile kept by
+		accident is a live session nobody is looking after. So the default is to delete, and
+		the caller is asked. Order matters — the row goes first, so a profile that cannot be
+		removed (a browser still holding a file open on Windows) cannot leave an account that
+		is half deleted.
+		"""
+		account = self.store.get(account_id)
+		if account is None:
+			raise RuntimeError(f'账号 {account_id} 不存在')
+		self.store.delete(account_id)
+		if not forget_profile:
+			return False
+		from panel.browser_login import forget_profile as forget
+
+		return forget(account.name, account.login_method)
+
+	def orphan_profiles(self) -> list['OrphanProfile']:
+		"""Browser profiles under the root that no account claims any more.
+
+		Two shapes accumulate and only one is an account's. A profile *directory* sits at
+		`<root>/<provider>/<name>`, so anything at `<root>/<name>` is from an older layout
+		that keyed profiles by site instead — told apart by Chrome's own subdirectory names,
+		because a provider directory contains accounts while a profile contains `Default`.
+		Both are listed; neither is deleted here. Reporting and deleting are separate calls
+		on purpose: the matching rule is mine, the decision is the owner's, and `rmtree` is
+		not where a guess belongs.
+		"""
+		from panel.browser_login import profile_name
+
+		root = _profile_root()
+		if not root.is_dir():
+			return []
+		claimed = {(a.login_method, profile_name(a.name)) for a in self.store.list()}
+		found: list[OrphanProfile] = []
+		for entry in sorted(root.iterdir()):
+			if not entry.is_dir():
+				continue
+			if _is_a_profile(entry):  # old layout: the profile itself, keyed by nothing we use
+				found.append(OrphanProfile(entry.name, None, _size(entry), old_layout=True))
+				continue
+			for child in sorted(entry.iterdir()):
+				if child.is_dir() and (entry.name, child.name) not in claimed:
+					found.append(OrphanProfile(child.name, entry.name, _size(child), old_layout=False))
+		return found
+
+	def delete_orphan_profiles(self, names: list[str]) -> int:
+		"""Delete the named orphans — `<provider>/<name>`, or `<name>` for an old-layout one.
+
+		Takes what to delete rather than re-deriving it, so what the owner saw listed is
+		what goes. A name that is no longer an orphan (an account was added back under it
+		meanwhile) is skipped rather than deleted, because the list it came from is a
+		snapshot and this is `rmtree`.
+		"""
+		root = _profile_root()
+		live = {o.key for o in self.orphan_profiles()}
+		removed = 0
+		for key in names:
+			if key not in live:
+				continue
+			target = (root / key).resolve()
+			if root.resolve() not in target.parents or not target.is_dir():
+				continue
+			shutil.rmtree(target)
+			removed += 1
+		return removed
 
 	async def bootstrap(self, account_id: int) -> str:
 		"""Trade the stored session for a permanent password, so every later

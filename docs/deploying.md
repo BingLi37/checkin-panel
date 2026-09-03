@@ -125,6 +125,39 @@ panel.example.com {
 And whatever you build, keep in mind what it is guarding: not a UI, but the only copy of your
 accounts.
 
+### If you paste an IdP session in, the panel is guarding more than the accounts
+
+A server with no desktop cannot show the login window an OAuth-only account needs, so the way to
+set one up there is to export the IdP session from your own browser with a cookie extension and
+paste it into the panel（README「服务器上怎么做浏览器登录」方案 B）.
+
+Pasting the *site's* own cookie instead (方案 A, the 「会话 Cookie」 login method) exposes one
+site's account and nothing else, so prefer it wherever it is enough — it covers any site whose
+check-in is a POST to a route. The rest of this section is about the IdP paste specifically, which
+`login_bonus` and `visit` accounts have no alternative to. Two things about it change what the
+exposure decisions above are worth:
+
+- **What you paste is the whole linux.do or github.com account**, not a per-site credential. It
+  is written into that account's browser profile, and the panel does not copy it into the
+  database — but the panel has no login of its own, so anyone who can reach the panel can use
+  that identity. Every line about `PANEL_HOST` and the published port matters more after this
+  step, not less.
+- **It crosses the network to get there.** Over plain HTTP to a published port, that paste is in
+  the clear on the wire. If the panel is anywhere but loopback or a private interface when you do
+  this, do it through TLS or an SSH tunnel — the alternative is handing your forum account to
+  whatever is between you and the server.
+
+The panel writes cookie *values*, which is why this works at all where copying a profile
+directory does not: the profile's cookie key is DPAPI-bound to one Windows account, while values
+are re-encrypted by the receiving browser.
+
+- **Deleting the account offers to delete that profile too, and the default is to delete it.**
+  The session you pasted lives in the directory, not in the database, so keeping the profile
+  keeps a working forum or GitHub login on the disk of a machine whose panel has no login of its
+  own — while the account it belonged to is gone from the list. Kept profiles, and the ones a
+  rename leaves behind (the directory is named after the account), are listed under
+  「清理 profile」 beside the page title, with their size, and can be deleted there.
+
 ### Back up the database yourself
 
 `panel-data` is the only copy of your accounts. `docker compose down -v` deletes it, along with

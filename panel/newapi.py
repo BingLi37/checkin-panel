@@ -48,29 +48,75 @@ CHECKIN_CANDIDATES = (
 )
 REFRESH_PATH = '/api/user/auth/refresh'  # JWT forks: trade the refresh cookie for a Bearer token
 REFRESH_COOKIE = 'new_api_refresh'
+# The only two cookies that authenticate anything, most common first. A pasted cookie jar
+# contains a dozen others (analytics, a WAF's clearance) and none of them are a credential.
+CREDENTIAL_COOKIES = ('session', REFRESH_COOKIE)
 OAUTH_FLAGS = ('linuxdo', 'github', 'oidc', 'telegram', 'wechat')
 ALREADY_DONE = re.compile(r'已签到|已经签到|重复签到|already', re.I)
 CHECKIN_LOG = re.compile(r'签到|check.?in', re.I)
 SYSTEM_LOG_TYPE = 4  # New API: 1 topup, 2 consume, 3 manage, 4 system, 5 error
 
 
+def _cookie_dicts(parsed) -> list[dict]:
+	"""Whatever a pasted JSON blob was, as a list of `{name, value}` records.
+
+	Three shapes reach here. A cookie list is what a browser extension exports (Cookie
+	Editor and friends) and what Playwright's `context.cookies()` returns. A single cookie
+	object is one row of that list, copied on its own. Anything else is treated as a plain
+	`{name: value}` mapping, which is the oldest shape this function accepted.
+	"""
+	if isinstance(parsed, list):
+		return [c for c in parsed if isinstance(c, dict)]
+	if not isinstance(parsed, dict):
+		return []
+	if isinstance(parsed.get('name'), str) and 'value' in parsed:
+		return [parsed]  # one exported cookie, pasted by itself
+	# A bare mapping. Only string values can be a credential — an exported cookie carries
+	# `"session": false` (meaning "is a session cookie"), and reading that boolean as the
+	# credential is what used to return the domain instead.
+	return [{'name': k, 'value': v} for k, v in parsed.items() if isinstance(v, str)]
+
+
+def _credentials_in(cookies: list[dict]) -> list[tuple[str, str]]:
+	"""The (cookie name, value) pairs from `cookies` that could authenticate, best first.
+
+	Ordered by CREDENTIAL_COOKIES rather than by position, so a jar containing both a
+	`session` and a `new_api_refresh` offers them in a predictable order; which one a
+	given fork actually wants is decided later, against a probe.
+	"""
+	found = []
+	for name in CREDENTIAL_COOKIES:
+		for cookie in cookies:
+			if cookie.get('name') == name and isinstance(cookie.get('value'), str) and cookie['value']:
+				found.append((name, cookie['value']))
+	return found
+
+
 def parse_session(raw: Optional[str]) -> Optional[str]:
-	"""Accept any shape a session cookie gets pasted in: bare value,
-	`session=v; other=w`, a JSON dict, or a Playwright cookie list."""
+	"""Accept any shape a credential cookie gets pasted in: bare value,
+	`session=v; other=w`, a JSON dict, or an exported cookie list.
+
+	Deliberately lenient — it also reads what is already in the database, where a value may
+	have been stored by an older build. The one thing it will not do is hand back a blob it
+	failed to understand: a whole JSON document returned as a "credential" gets sent to the
+	site, which answers 凭据无效, and a paste-format problem reads as an expired session.
+	`credentials_from_paste` is the strict counterpart, for a value a human just typed in.
+	"""
 	raw = (raw or '').strip()
 	if not raw:
 		return None
-	if raw.startswith('{'):
+	if raw[0] in '{[':
 		try:
-			d = json.loads(raw)
-			return d.get('session') or next((str(v) for v in d.values()), None)
-		except (json.JSONDecodeError, StopIteration):
-			pass
-	elif raw.startswith('['):
-		try:
-			return next(c['value'] for c in json.loads(raw) if c.get('name') == 'session')
-		except (json.JSONDecodeError, StopIteration, TypeError, KeyError):
-			pass
+			parsed = json.loads(raw)
+		except json.JSONDecodeError:
+			parsed = None
+		if parsed is not None:
+			found = _credentials_in(_cookie_dicts(parsed))
+			if found:
+				return found[0][1]
+			# Understood as JSON, but nothing in it authenticates. None sends the caller
+			# down its "no credential" branch instead of blaming the site.
+			return next((c['value'] for c in _cookie_dicts(parsed) if isinstance(c.get('value'), str)), None)
 	if 'session=' in raw:
 		jar = SimpleCookie()
 		jar.load(raw)
@@ -79,12 +125,63 @@ def parse_session(raw: Optional[str]) -> Optional[str]:
 	return raw
 
 
+@dataclass(frozen=True)
+class PastedCredential:
+	"""One credential found in a paste, and which cookie it came from.
+
+	The name matters: a `session` value is spent against `/api/user/self`, a
+	`new_api_refresh` has to be traded for a Bearer token first (`refresh_access`), and
+	only a probe can say which of the two a given fork wants.
+	"""
+
+	value: str
+	cookie_name: str
+
+
+def credentials_from_paste(raw: Optional[str]) -> list[PastedCredential]:
+	"""Every credential in something a human just pasted, best first. Raises if there is none.
+
+	Strict where `parse_session` is lenient, because the two answer different questions.
+	Reading the database asks "is there a credential here"; a paste asks "did the human give
+	me one", and the honest answer to a jar with no `session` and no `new_api_refresh` in it
+	is a message naming what it did contain — not a value that fails authentication later
+	and gets reported as the site's fault.
+	"""
+	text = (raw or '').strip()
+	if not text:
+		raise ValueError('没有粘贴任何内容')
+	if text[0] in '{[':
+		try:
+			parsed = json.loads(text)
+		except json.JSONDecodeError as e:
+			raise ValueError(f'这段内容看起来是 JSON，但解析失败：{e.msg}（第 {e.lineno} 行）') from e
+		cookies = _cookie_dicts(parsed)
+		found = _credentials_in(cookies)
+		if found:
+			return [PastedCredential(value, name) for name, value in found]
+		names = [str(c.get('name')) for c in cookies if c.get('name')]
+		listed = '、'.join(names[:8]) + ('…' if len(names) > 8 else '') if names else '没有任何 cookie'
+		raise ValueError(
+			f'这段 JSON 里没有 {" 也没有 ".join(CREDENTIAL_COOKIES)}，只找到：{listed}。'
+			'请在站点的已登录页面导出 cookie，再整段粘进来'
+		)
+	value = parse_session(text)
+	if not value:
+		raise ValueError('这段内容里找不到可用的凭据')
+	return [PastedCredential(value, 'session')]
+
+
 @dataclass
 class SiteInfo:
 	"""What a New API instance told us about itself."""
 
 	base_url: str
-	login_methods: tuple[str, ...] = ('password',)
+	# Empty means **the site did not say**, not "password only". A WAF that answers
+	# `/api/status` with 200 HTML (anyrouter.top) leaves nothing to read, and reporting
+	# `('password',)` there told the form to hide the LinuxDO login that site really has —
+	# showing no evidence as evidence, the same mistake `last_checked_in` had to unlearn.
+	# Every reader therefore has to treat empty as unknown and offer everything.
+	login_methods: tuple[str, ...] = ()
 	quota_per_unit: float = DEFAULT_QUOTA_PER_UNIT
 	turnstile: bool = False
 	turnstile_key: Optional[str] = None  # its Turnstile sitekey, for minting a token in a browser
@@ -312,9 +409,31 @@ async def whoami(
 	The only honest "am I logged in?" test: a `session` cookie exists long before
 	anyone logs in (New API stores the OAuth state in it).
 	"""
-	async with _client(base_url, session=session, access_token=access_token, api_user=api_user) as client:
-		data, _ = await _self(client)
+	data, _ = await authenticate(base_url, session=session, access_token=access_token, api_user=api_user)
 	return data
+
+
+# A fork that validates `new-api-user` refuses a live session without the account's own id,
+# and its wording is the only way to tell that apart from a dead credential. Measured:
+# "New-Api-User header not provided".
+NEEDS_API_USER = re.compile(r'new[-_ ]?api[-_ ]?user', re.I)
+
+
+async def authenticate(
+	base_url: str,
+	*,
+	session: Optional[str] = None,
+	access_token: Optional[str] = None,
+	api_user: Optional[str] = None,
+) -> tuple[Optional[dict], Optional[str]]:
+	"""(the user behind a credential, why it failed) — `whoami` with its reason kept.
+
+	`whoami` answers "am I logged in", which is all a check-in needs. Verifying a credential
+	someone just pasted needs more: telling "this cookie is dead" apart from "this cookie is
+	fine, the fork also wants the account's id" decides whether they go and fetch a new one.
+	"""
+	async with _client(base_url, session=session, access_token=access_token, api_user=api_user) as client:
+		return await _self(client)
 
 
 async def balance(base_url: str, *, quota_per_unit: float = DEFAULT_QUOTA_PER_UNIT, **credentials) -> Optional[float]:
@@ -384,11 +503,24 @@ async def probe(base_url: str) -> SiteInfo:
 	info = SiteInfo(base_url=base_url.rstrip('/'))
 	async with _client(info.base_url) as anon:
 		try:
-			data = _body(await anon.get('/api/status')).get('data') or {}
+			response = await anon.get('/api/status')
 		except httpx.HTTPError as e:
 			raise RuntimeError(f'无法访问 {info.base_url}: {why(e)}') from e
-		methods = ['password'] + [k for k in OAUTH_FLAGS if data.get(f'{k}_oauth')]
-		info.login_methods = tuple(methods)
+		data = _body(response).get('data') or {}
+		# Read the flags only if the site actually answered with its status. A WAF answers
+		# 200 with an HTML challenge to every path (anyrouter.top, ADR-0010), and `_body`
+		# turns that into a failure dict whose `data` is None — indistinguishable, from here,
+		# from a site that reported no OAuth at all. Claiming `('password',)` for it hid a
+		# LinuxDO login that exists, so an unreadable status leaves the tuple empty and
+		# every other field at its default: absent, not false.
+		if isinstance(data, dict) and data:
+			info.login_methods = tuple(['password'] + [k for k in OAUTH_FLAGS if data.get(f'{k}_oauth')])
+		# These fall back to their defaults on an unreadable status, which is right for the
+		# divisor (New API's own default) and harmless for Turnstile: `False` there means "no
+		# reason to mint a token", and a site that does want one says so by refusing the POST
+		# with `Turnstile token 为空`, which `_with_turnstile` handles. `login_methods` was the
+		# one field where a default could not stand in for a reading, because it decides what
+		# the form is willing to offer at all.
 		info.quota_per_unit = float(data.get('quota_per_unit') or DEFAULT_QUOTA_PER_UNIT)
 		info.turnstile = bool(data.get('turnstile_check'))
 		info.turnstile_key = data.get('turnstile_site_key') or None

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from panel import newapi, promo
 from panel.app import create_app
+from panel.service import CredentialCheck
 from panel.store import AccountStore
 
 
@@ -20,12 +21,17 @@ def store():
 
 
 @pytest.fixture
-def service():
+def service(store):
 	mock = MagicMock()
 	mock.check_in = AsyncMock(return_value=newapi.Outcome(True, True, 1.0, 1.25, session='secret-session'))
 	mock.check_in_many = AsyncMock(return_value={})
 	mock.probe = AsyncMock(return_value=newapi.SiteInfo(base_url='https://x.test', login_methods=('password',)))
 	mock.bootstrap = AsyncMock(return_value='alice')
+	# Deleting is the service's job now, because the row and the browser profile have to go
+	# in one order (row first, so a profile Windows will not let go of cannot leave half an
+	# account). The mock therefore has to do the store half, or these tests would assert that
+	# a deleted account is still gone while nothing deleted it.
+	mock.delete = MagicMock(side_effect=lambda account_id, **kw: store.delete(account_id) or False)
 	return mock
 
 
@@ -34,21 +40,30 @@ def client(store, service):
 	return TestClient(create_app(store=store, service=service))
 
 
-def test_crud_round_trip(client, store):
+def test_crud_round_trip(client, store, service):
 	assert client.get('/api/accounts').json() == []
 
 	created = client.post('/api/accounts', json={'name': 'A', 'base_url': 'https://x.test/'})
 	assert created.status_code == 201
-	account_id = created.json()['id']
-	assert created.json()['base_url'] == 'https://x.test'
+	# Saving answers {account, credential}: a paste can be verified on the way in, and that
+	# verdict is about the request, not about the account.
+	account_id = created.json()['account']['id']
+	assert created.json()['account']['base_url'] == 'https://x.test'
+	assert created.json()['credential'] is None  # nothing was pasted, so nothing was checked
 
 	assert client.get(f'/api/accounts/{account_id}').json()['name'] == 'A'
 	assert len(client.get('/api/accounts').json()) == 1
 
-	updated = client.put(f'/api/accounts/{account_id}', json={'name': 'B', 'login_method': 'github'})
-	assert (updated.json()['name'], updated.json()['login_method']) == ('B', 'github')
+	updated = client.put(f'/api/accounts/{account_id}', json={'name': 'B', 'login_method': 'github'}).json()
+	assert (updated['account']['name'], updated['account']['login_method']) == ('B', 'github')
 
-	assert client.delete(f'/api/accounts/{account_id}').status_code == 204
+	# 200, not 204: the answer carries whether a browser profile went with the account, which
+	# is the one part of the outcome the caller cannot see for itself. What that answer *is*
+	# belongs to test_service, which owns a real directory; here the service is a mock, so
+	# only the round trip is on trial.
+	gone = client.delete(f'/api/accounts/{account_id}')
+	assert gone.status_code == 200
+	assert gone.json() == {'profile_removed': False}
 	assert client.get(f'/api/accounts/{account_id}').status_code == 404
 
 
@@ -58,7 +73,7 @@ def test_a_duplicate_name_on_one_site_is_refused_with_a_reason(client):
 	clash = client.post('/api/accounts', json={'name': 'A', 'base_url': 'https://x.test'})
 	assert clash.status_code == 409 and '同名' in clash.json()['detail']
 
-	other = client.post('/api/accounts', json={'name': 'B', 'base_url': 'https://x.test'}).json()
+	other = client.post('/api/accounts', json={'name': 'B', 'base_url': 'https://x.test'}).json()['account']
 	assert client.put(f'/api/accounts/{other["id"]}', json={'name': 'A'}).status_code == 409
 	assert client.post('/api/accounts', json={'name': 'A', 'base_url': 'https://y.test'}).status_code == 201
 
@@ -88,10 +103,10 @@ def test_avatar_choice_round_trips_over_http(client):
 	created = client.post(
 		'/api/accounts',
 		json={'name': 'A', 'base_url': 'https://x.test', 'avatar_color': 'violet', 'avatar_shape': 'dot'},
-	).json()
+	).json()['account']
 	assert (created['avatar_color'], created['avatar_shape']) == ('violet', 'dot')
 
-	updated = client.put(f'/api/accounts/{created["id"]}', json={'avatar_color': 'emerald'}).json()
+	updated = client.put(f'/api/accounts/{created["id"]}', json={'avatar_color': 'emerald'}).json()['account']
 	assert (updated['avatar_color'], updated['avatar_shape']) == ('emerald', 'dot')
 
 
@@ -109,12 +124,12 @@ def test_editing_an_account_does_not_clear_its_avatar(client):
 	created = client.post(
 		'/api/accounts',
 		json={'name': 'A', 'base_url': 'https://x.test', 'avatar_color': 'amber', 'avatar_shape': 'letter'},
-	).json()
+	).json()['account']
 
 	edited = client.put(
 		f'/api/accounts/{created["id"]}',
 		json={'name': 'A renamed', 'base_url': 'https://x.test', 'login_method': 'github'},
-	).json()
+	).json()['account']
 
 	assert (edited['avatar_color'], edited['avatar_shape']) == ('amber', 'letter')
 
@@ -196,6 +211,149 @@ def test_no_browser_installed_is_a_reason_not_a_crash(client, store, monkeypatch
 
 	assert response.status_code == 400
 	assert response.json()['detail']
+
+
+PASTED_JAR = """[
+	{"domain": ".x.test", "name": "session", "value": "abc123", "session": false, "hostOnly": false},
+	{"domain": ".x.test", "name": "_ga", "value": "GA1.1.9", "session": false, "storeId": null}
+]"""
+
+
+def test_a_pasted_jar_is_reduced_to_its_credential_and_verified(client, store, service):
+	"""What the owner pastes is a whole cookie jar; what gets stored is one value out of it,
+	and the verdict on it comes back with the same response that saved the account."""
+	service.verify_credential = AsyncMock(
+		return_value=CredentialCheck(True, kind='session', api_user='4242', username='alice', quota=2.0)
+	)
+
+	body = client.post(
+		'/api/accounts',
+		json={'name': 'A', 'base_url': 'https://x.test', 'login_method': 'session', 'session': PASTED_JAR},
+	).json()
+
+	assert store.get(body['account']['id']).session == 'abc123', 'the jar is not what gets stored'
+	assert (body['credential']['ok'], body['credential']['username']) == (True, 'alice')
+	assert body['credential']['warning'] is None
+	candidates = service.verify_credential.await_args.args[1]
+	assert [c.cookie_name for c in candidates] == ['session'], 'analytics cookies are not candidates'
+
+
+def test_a_credential_that_does_not_work_is_a_warning_not_an_error(client, store, service):
+	"""ADR-0010: a WAF can refuse a live session. Rejecting the save would throw away a
+	correct paste on a site having a bad afternoon, so the account is kept and the doubt
+	is reported beside it."""
+	service.verify_credential = AsyncMock(return_value=CredentialCheck(False, kind='session', reason='这个凭据登录不了：未登录'))
+
+	response = client.post(
+		'/api/accounts',
+		json={'name': 'A', 'base_url': 'https://x.test', 'login_method': 'session', 'session': PASTED_JAR},
+	)
+
+	assert response.status_code == 201, 'the account is saved either way'
+	assert response.json()['credential']['warning'] == '这个凭据登录不了：未登录'
+	assert store.get(response.json()['account']['id']).session == 'abc123'
+
+
+def test_a_verification_that_itself_crashed_still_saves_the_account(client, store, service):
+	service.verify_credential = AsyncMock(side_effect=RuntimeError('probe exploded'))
+
+	response = client.post(
+		'/api/accounts',
+		json={'name': 'A', 'base_url': 'https://x.test', 'login_method': 'session', 'session': PASTED_JAR},
+	)
+
+	assert response.status_code == 201
+	assert '凭据没能验证' in response.json()['credential']['warning']
+	assert store.get(response.json()['account']['id']) is not None
+
+
+def test_a_paste_with_no_credential_in_it_is_refused_before_anything_is_written(client, store):
+	"""422 for the one thing that is genuinely the paste's fault: there is no credential in
+	it at all. Nothing is saved, so nobody ends up with an account holding a `_ga` value."""
+	jar = '[{"domain": ".x.test", "name": "_ga", "value": "GA1.1.9", "session": false}]'
+
+	response = client.post(
+		'/api/accounts',
+		json={'name': 'A', 'base_url': 'https://x.test', 'login_method': 'session', 'session': jar},
+	)
+
+	assert response.status_code == 422
+	assert '_ga' in response.json()['detail'], 'saying what it did find is what makes this fixable'
+	assert store.list() == [], 'nothing was written'
+
+
+def test_a_plain_edit_of_a_saved_account_verifies_nothing(client, store, service):
+	"""Renaming an account must not spend its credential — a JWT fork's refresh cookie is
+	consumed by a check, so verifying on every PUT would rotate it for no reason."""
+	service.verify_credential = AsyncMock(return_value=CredentialCheck(True))
+	account = store.create(name='A', base_url='https://x.test', login_method='session', session='kept')
+
+	body = client.put(f'/api/accounts/{account.id}', json={'name': 'A renamed'}).json()
+
+	assert body['credential'] is None
+	assert store.get(account.id).session == 'kept'
+	service.verify_credential.assert_not_awaited()
+
+
+def test_resubmitting_the_same_credential_verifies_nothing(client, store, service):
+	"""The edit form loads the stored credential into its fields and submits it back, so this
+	is what an ordinary rename actually looks like on the wire — `session` is present and
+	unchanged. Checking it would spend a JWT fork's refresh cookie and rotate it, logging out
+	whoever else holds that value, the owner's own browser included."""
+	service.verify_credential = AsyncMock(return_value=CredentialCheck(True))
+	account = store.create(
+		name='A', base_url='https://x.test', login_method='github', session='refresh-v1', access_token='sk-1'
+	)
+
+	body = client.put(
+		f'/api/accounts/{account.id}',
+		json={'name': 'A renamed', 'session': 'refresh-v1', 'access_token': 'sk-1'},
+	).json()
+
+	assert body['credential'] is None, 'nothing changed, so nothing was spent'
+	assert body['account']['name'] == 'A renamed', 'the rename still landed'
+	assert store.get(account.id).session == 'refresh-v1'
+	service.verify_credential.assert_not_awaited()
+
+
+def test_a_changed_credential_on_an_oauth_account_is_verified(client, store, service):
+	"""An OAuth account may now hold the site's own credential beside its IdP login, so a
+	paste into one of those fields has to be checked like any other — the account keeps its
+	`github` method, which is what leaves the browser hop as the fallback."""
+	service.verify_credential = AsyncMock(
+		return_value=CredentialCheck(True, kind='new_api_refresh', api_user='28866')
+	)
+	account = store.create(name='A', base_url='https://x.test', login_method='github', session='refresh-v1')
+
+	body = client.put(f'/api/accounts/{account.id}', json={'session': 'refresh-v2'}).json()
+
+	assert body['credential']['kind'] == 'new_api_refresh'
+	assert body['account']['login_method'] == 'github', 'pasting one does not change how it logs in'
+	service.verify_credential.assert_awaited_once()
+
+
+def test_saving_an_access_token_verifies_it_too(client, store, service):
+	"""It arrives in its own field rather than as a jar, so the paste reader never sees it —
+	which left the credential a headless deployment reaches for first as the only one saved
+	unverified, wrong until tomorrow's failed run."""
+	service.verify_credential = AsyncMock(
+		return_value=CredentialCheck(True, kind='access_token', api_user='7', username='alice')
+	)
+
+	body = client.post(
+		'/api/accounts',
+		json={
+			'name': 'A',
+			'base_url': 'https://x.test',
+			'login_method': 'access_token',
+			'access_token': 'sk-real',
+		},
+	).json()
+
+	assert body['credential']['kind'] == 'access_token'
+	assert body['credential']['warning'] is None
+	service.verify_credential.assert_awaited_once()
+	assert 'sk-real' not in str(body['credential']), 'a credential never travels back'
 
 
 def test_the_health_route_never_touches_an_account(client, store):
@@ -311,3 +469,97 @@ def test_a_broken_manifest_never_becomes_an_error(client, monkeypatch, promo_car
 
 	assert response.status_code == 200 and response.json() == {'card': None}
 	assert client.get('/api/accounts').status_code == 200, 'and the rest of the panel is untouched'
+
+
+IDP_JAR = '[{"name": "_t", "value": "idp-token", "domain": ".linux.do", "session": false}]'
+
+
+def test_injecting_idp_cookies_reports_that_the_profile_now_logs_in(client, store, service):
+	"""The one thing worth knowing is not "the cookies went in" — it is that a headless hop
+	completed with them, which is what tomorrow's scheduled run has to do unattended."""
+	import panel.browser_login as module
+
+	service.inject_idp_cookies = AsyncMock(
+		return_value=module.IdpInjection(
+			injected=2, hosts=('linux.do',), verified=True, credential='fresh', api_user='4242'
+		)
+	)
+	account = store.create(name='A', base_url='https://x.test', login_method='linuxdo')
+
+	body = client.post(f'/api/accounts/{account.id}/idp-cookies', json={'cookies': IDP_JAR}).json()
+
+	assert (body['injected'], body['verified'], body['api_user']) == (2, True, '4242')
+	assert body['hosts'] == ['linux.do']
+	# The session it won is stored, not returned: this API never hands a credential back.
+	assert 'credential' not in body
+	assert 'fresh' not in str(body)
+
+
+def test_an_injection_whose_login_failed_says_why(client, store, service):
+	import panel.browser_login as module
+
+	service.inject_idp_cookies = AsyncMock(
+		return_value=module.IdpInjection(
+			injected=1, hosts=('linux.do',), verified=False, reason='IdP 那边还在等人操作'
+		)
+	)
+	account = store.create(name='A', base_url='https://x.test', login_method='linuxdo')
+
+	body = client.post(f'/api/accounts/{account.id}/idp-cookies', json={'cookies': IDP_JAR}).json()
+
+	assert (body['verified'], body['reason']) == (False, 'IdP 那边还在等人操作')
+
+
+def test_a_paste_that_is_not_a_cookie_jar_is_422_and_touches_no_profile(client, store, service):
+	service.inject_idp_cookies = AsyncMock(side_effect=ValueError('这段内容不是有效的 JSON'))
+	account = store.create(name='A', base_url='https://x.test', login_method='linuxdo')
+
+	response = client.post(f'/api/accounts/{account.id}/idp-cookies', json={'cookies': 'not json'})
+
+	assert response.status_code == 422 and 'JSON' in response.json()['detail']
+
+
+def test_injecting_into_a_password_account_is_refused_with_the_reason(client, store, service):
+	"""A password or session account has no IdP profile to feed — pasting the site's own
+	cookie is the whole job there, and saying so beats a generic failure."""
+	service.inject_idp_cookies = AsyncMock(side_effect=RuntimeError('只有授权登录的账号需要注入 IdP 会话（当前是 password）'))
+	account = store.create(name='A', base_url='https://x.test', login_method='password')
+
+	response = client.post(f'/api/accounts/{account.id}/idp-cookies', json={'cookies': IDP_JAR})
+
+	assert response.status_code == 400 and '只有授权登录' in response.json()['detail']
+
+
+def test_injecting_with_no_browser_installed_is_a_reason_not_a_crash(store, monkeypatch):
+	"""Same reason as browser-login above: the container image has no cloakbrowser, so the
+	import itself fails and that must not surface as a 500.
+
+	This one needs the *real* service — the lazy import lives inside `inject_idp_cookies`,
+	so against a mock it would never run and the test would pass on nothing.
+	"""
+	from panel.service import CheckInService
+
+	monkeypatch.setitem(sys.modules, 'panel.browser_login', None)
+	real = TestClient(create_app(store=store, service=CheckInService(store)))
+	account = store.create(name='A', base_url='https://x.test', login_method='github')
+
+	response = real.post(f'/api/accounts/{account.id}/idp-cookies', json={'cookies': IDP_JAR})
+
+	assert response.status_code == 400 and response.json()['detail']
+
+
+def test_injecting_into_a_password_account_never_reaches_the_browser(store):
+	"""The real refusal, not a stubbed one: a password account is turned away by the service
+	before any import or launch is attempted."""
+	from panel.service import CheckInService
+
+	real = TestClient(create_app(store=store, service=CheckInService(store)))
+	account = store.create(name='A', base_url='https://x.test', login_method='password')
+
+	response = real.post(f'/api/accounts/{account.id}/idp-cookies', json={'cookies': IDP_JAR})
+
+	assert response.status_code == 400 and '只有授权登录' in response.json()['detail']
+
+
+def test_injecting_into_a_missing_account_is_404(client):
+	assert client.post('/api/accounts/999/idp-cookies', json={'cookies': IDP_JAR}).status_code == 404

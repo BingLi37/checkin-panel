@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from panel import newapi, promo, scheduler
-from panel.service import CheckInService
+from panel.service import CheckInService, CredentialCheck
 from panel.store import LOGIN_METHODS, MECHANISMS, AccountStore
 
 
@@ -60,6 +60,18 @@ class BrowserLoginIn(BaseModel):
 	set_password: bool = True
 
 
+class IdpCookiesIn(BaseModel):
+	cookies: str
+	verify: bool = True
+
+
+class ProfileKeysIn(BaseModel):
+	"""Which orphaned profiles to delete, as `<provider>/<name>` or a bare `<name>` for one
+	from the old layout — the path relative to the profile root, either way."""
+
+	keys: list[str]
+
+
 WINDOW = re.compile(r'([01]?\d|2[0-3]):[0-5]\d')
 # Avatar colour/shape are slugs whose meaning lives in frontend/src/avatar.ts. Checking
 # only the shape keeps the palette in one place; an unknown slug falls back there, so the
@@ -87,6 +99,29 @@ def _check(payload: AccountIn) -> dict:
 		if value is not None and not AVATAR_SLUG.fullmatch(str(value)):
 			raise HTTPException(status_code=422, detail=f'{label}要写成 2-16 位小写英文，例如 blue')
 	return fields
+
+
+def _pasted(fields: dict) -> Optional[list[newapi.PastedCredential]]:
+	"""Read the `session` field as something a human pasted, and normalise it in place.
+
+	Whatever shape it arrived in — a bare value, a `session=…` header, a whole exported cookie
+	jar — the column stores the credential itself. Storing the JSON document instead is how a
+	paste-format mistake ended up wearing the site's error message: it authenticates against
+	nothing, and the site answers 凭据无效, which reads as an expired session.
+
+	A paste with no credential in it is a 422 and nothing is written; a credential that turns
+	out not to authenticate is not (that is `verify_credential`'s business, and ADR-0010 is the
+	reason it cannot be an error — a WAF refuses good credentials too).
+	"""
+	raw = fields.get('session')
+	if not raw:
+		return None
+	try:
+		candidates = newapi.credentials_from_paste(raw)
+	except ValueError as e:
+		raise HTTPException(status_code=422, detail=str(e)) from None
+	fields['session'] = candidates[0].value
+	return candidates
 
 
 def _outcome(outcome: newapi.Outcome) -> dict:
@@ -127,34 +162,106 @@ def create_app(
 			raise HTTPException(status_code=404, detail='Account not found')
 		return account
 
+	async def _with_credential(account_id: int, candidates, fields: dict) -> dict:
+		"""The saved account, plus what its credential turned out to be worth.
+
+		`credential` is null when this request carried none, so a caller that only sets a name
+		sees the same thing it always did. When there is one it is checked here rather than in
+		a route of its own: a JWT fork's refresh cookie is *spent* by the check and replaced,
+		so the verification has to happen where the replacement can be stored in the same
+		breath (`service.verify_credential`). A separate stateless route would either hand the
+		rotated value back to the browser — which this API never does for a credential — or
+		burn the credential and drop it.
+
+		An **access token** counts as a pasted credential too, and it arrives in its own field
+		rather than as a jar `_pasted` can read. Leaving it out meant the one credential a
+		headless deployment is most likely to use was the only one saved unverified — wrong
+		until tomorrow's failed run.
+		"""
+		if not candidates and not fields.get('access_token'):
+			return {'account': asdict(_require(account_id)), 'credential': None}
+		try:
+			check = await service.verify_credential(account_id, candidates)
+		except Exception as e:  # a probe that failed must not lose the account that was saved
+			check = CredentialCheck(False, reason=f'凭据没能验证：{newapi.why(e)}')
+		body = asdict(check)
+		body['warning'] = None if check.ok else check.reason
+		return {'account': asdict(_require(account_id)), 'credential': body}
+
 	@app.get('/api/accounts')
 	def list_accounts():
 		return [asdict(a) for a in store.list()]
 
 	@app.post('/api/accounts', status_code=201)
-	def create_account(payload: AccountIn):
+	async def create_account(payload: AccountIn):
+		fields = _check(payload)
+		candidates = _pasted(fields)
 		try:
-			return asdict(store.create(**_check(payload)))
+			account = store.create(**fields)
 		except sqlite3.IntegrityError:
 			raise HTTPException(status_code=409, detail=DUPLICATE) from None
+		return await _with_credential(account.id, candidates, fields)
 
 	@app.get('/api/accounts/{account_id}')
 	def get_account(account_id: int):
 		return asdict(_require(account_id))
 
 	@app.put('/api/accounts/{account_id}')
-	def update_account(account_id: int, payload: AccountPatch):
-		_require(account_id)
+	async def update_account(account_id: int, payload: AccountPatch):
+		before = _require(account_id)
+		fields = _check(payload)
+		candidates = _pasted(fields)
+		# Verifying costs something on a JWT fork: the check *spends* the refresh cookie and
+		# rotates it, which logs out everyone else holding that value — including the owner's
+		# own browser. The edit form loads the stored credential into its fields and submits it
+		# back untouched, so a rename would otherwise burn a rotation and a login. Only a
+		# credential that actually changed is a paste worth checking; `checkable` therefore
+		# carries what this request *changed*, while `fields` still carries everything to store.
+		checkable = dict(fields)
+		if candidates and fields.get('session') == before.session:
+			candidates = None
+		if checkable.get('access_token') == before.access_token:
+			checkable.pop('access_token', None)
 		try:
-			store.update(account_id, **_check(payload))
+			store.update(account_id, **fields)
 		except sqlite3.IntegrityError:
 			raise HTTPException(status_code=409, detail=DUPLICATE) from None
-		return asdict(_require(account_id))
+		return await _with_credential(account_id, candidates, checkable)
 
-	@app.delete('/api/accounts/{account_id}', status_code=204)
-	def delete_account(account_id: int):
+	@app.delete('/api/accounts/{account_id}')
+	def delete_account(account_id: int, forget_profile: bool = True):
+		"""Delete an account, and by default its browser profile.
+
+		A query flag rather than a body, because DELETE bodies are not reliably carried, and
+		defaulting to true rather than false because of what the profile holds: the IdP
+		session, i.e. the whole forum or GitHub login. Leaving it behind is how a deleted
+		account's credential stayed on disk with nothing naming the directory.
+
+		No longer 204: the answer says whether a profile was really removed, which is the one
+		thing the caller cannot work out for itself.
+		"""
 		_require(account_id)
-		store.delete(account_id)
+		return {'profile_removed': service.delete(account_id, forget_profile=forget_profile)}
+
+	@app.get('/api/profiles/orphans')
+	def orphan_profiles():
+		"""Browser profiles on disk that no account claims — a rename or an old layout leaves
+		these behind, and each one may still hold a live IdP session."""
+		found = service.orphan_profiles()
+		return {
+			'profiles': [
+				{'key': o.key, 'name': o.name, 'provider': o.provider, 'bytes': o.bytes, 'old_layout': o.old_layout}
+				for o in found
+			],
+			'bytes': sum(o.bytes for o in found),
+		}
+
+	@app.post('/api/profiles/orphans/delete')
+	def delete_orphan_profiles(payload: ProfileKeysIn):
+		"""Delete the listed orphans. Takes keys from the listing above rather than deleting
+		everything unclaimed, so the owner's decision is what runs and not a re-derivation of
+		it; anything that stopped being an orphan meanwhile is skipped."""
+		return {'removed': service.delete_orphan_profiles(payload.keys)}
 
 	@app.post('/api/accounts/{account_id}/check-in')
 	async def check_in(account_id: int):
@@ -214,6 +321,35 @@ def create_app(
 			except Exception as e:
 				return {'session_stored': True, 'username': None, 'warning': str(e)}
 		return {'session_stored': True, 'username': username}
+
+	@app.post('/api/accounts/{account_id}/idp-cookies')
+	async def idp_cookies(account_id: int, payload: IdpCookiesIn):
+		"""Load an exported IdP session into this account's browser profile.
+
+		The server-deployment path for an OAuth-only account. Its site session is renewed
+		every day by a headless OAuth hop, but the IdP session that hop renews *from*
+		normally arrives through one visible window (ADR-0009) — which a headless box cannot
+		offer. This supplies it as cookie values instead, and `verify` proves on the spot that
+		the hop now completes, rather than leaving it to be discovered tomorrow.
+
+		Note what crosses this API: an IdP session cookie is the whole account at
+		linux.do or github.com, and the panel has no auth layer (ADR-0003). The cookies
+		are written into the profile and **not** stored by the panel — the profile is where
+		that secret already lives after any ordinary browser login.
+		"""
+		_require(account_id)
+		try:
+			# Imported inside the try for the same reason as browser-login above: a
+			# browser-less install has no cloakbrowser, and an ImportError out here is a 500
+			# that says nothing.
+			result = await service.inject_idp_cookies(account_id, payload.cookies, verify=payload.verify)
+		except ValueError as e:  # not a cookie jar, or the wrong provider — nothing was touched
+			raise HTTPException(status_code=422, detail=str(e)) from None
+		except Exception as e:
+			raise HTTPException(status_code=400, detail=newapi.why(e)) from e
+		# The site session the verification won is already stored; it must not travel back.
+		# This API never hands a credential to the browser, and the caller has no use for it.
+		return {k: v for k, v in asdict(result).items() if k != 'credential'}
 
 	@app.get('/api/promos')
 	async def promos():

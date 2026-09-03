@@ -18,11 +18,15 @@ import {
 } from '@heroui/react'
 import { api, type Account, type Outcome } from './api'
 import AccountForm, { FIELD } from './AccountForm'
+import IdpCookiesModal from './IdpCookiesModal'
+import DeleteAccountModal from './DeleteAccountModal'
+import ProfileCleanupModal from './ProfileCleanupModal'
 import AccountAvatar from './AccountAvatar'
 import PromoCard from './PromoCard'
 import { defaultSkins, type AvatarColor, type AvatarShape } from './avatar'
 import { loginMethodMeta, SearchIcon } from './icons'
 import { useStuck } from './useStuck'
+import type { AccountSaved, IdpInjection } from './api'
 
 /** One container to append into: every toast used to be pinned at the same top-6 right-6,
  *  so two in a row landed on top of each other. */
@@ -88,11 +92,14 @@ const needsBrowser = (acc: Account) =>
 
 type RowAction = { key: string; label: string; color: 'default' | 'secondary' | 'danger'; run: () => void }
 
-/** The two actions that only some rows have. Both layouts reserve a fixed-width slot for each,
+/** The actions that only some rows have. Both layouts reserve a fixed-width slot for each,
  *  so 签到 and everything after it line up down the list whether or not a row has them. The card
- *  widths are smaller because its buttons are compact enough to keep all five on one line. */
+ *  widths are smaller because its buttons are compact enough to keep all five on one line.
+ *
+ *  Adding an action means adding its slot here, or the two layouts drift apart. */
 const ACTION_SLOTS = [
   { key: 'browser', table: 'w-[92px]', card: 'w-[76px]' },
+  { key: 'inject', table: 'w-[104px]', card: 'w-[84px]' },
   { key: 'bootstrap', table: 'w-[76px]', card: 'w-[64px]' },
 ] as const
 
@@ -114,7 +121,12 @@ export default function App() {
   const [editing, setEditing] = useState<Account | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
+  const [injecting, setInjecting] = useState<Account | null>(null)
+  const [deleting, setDeleting] = useState<Account | null>(null)
   const { isOpen, onOpen, onClose } = useDisclosure()
+  const { isOpen: injectOpen, onOpen: onInjectOpen, onClose: onInjectClose } = useDisclosure()
+  const { isOpen: deleteOpen, onOpen: onDeleteOpen, onClose: onDeleteClose } = useDisclosure()
+  const { isOpen: cleanupOpen, onOpen: onCleanupOpen, onClose: onCleanupClose } = useDisclosure()
   const { sentinel, stuck } = useStuck()
 
   const refresh = useCallback(async () => {
@@ -144,6 +156,24 @@ export default function App() {
     } finally {
       setBusyId(null)
       await refresh()
+    }
+  }
+
+  /** Reload the list, and report what the pasted credential turned out to be worth.
+   *
+   *  The account is saved either way — a site behind a WAF can refuse a perfectly good
+   *  cookie (ADR-0010), so a failed check is a warning, never a lost account. Silence here
+   *  would mean discovering it at 08:30 tomorrow instead. */
+  async function afterSaved(saved?: AccountSaved) {
+    await refresh()
+    const check = saved?.credential
+    if (!check) return
+    if (check.ok) {
+      const who = check.username ? `${check.username}` : '已登录'
+      const balance = check.quota != null ? `，余额 $${check.quota}` : ''
+      toast(`${saved.account.name}: 凭据可用（${who}${balance}）`, true)
+    } else {
+      toast(`${saved.account.name}: 账号已保存，但凭据没通过 —— ${check.warning ?? '站点没有说明原因'}`, false)
     }
   }
 
@@ -183,9 +213,21 @@ export default function App() {
     }
   }
 
-  const remove = (acc: Account) => {
-    if (!window.confirm(`删除「${acc.name}」？它的凭据会一起删掉，浏览器 profile 保留。`)) return
-    return run(acc.id, () => api.deleteAccount(acc.id), () => toast(`${acc.name}: 已删除`, true))
+  // A modal rather than `window.confirm`, because the profile is a choice and confirm cannot
+  // hold one. What that choice is about: the profile holds the IdP session, so the old
+  // "profile 保留" left a live github.com login on disk under a name nothing showed.
+  function askToDelete(acc: Account) {
+    setDeleting(acc)
+    onDeleteOpen()
+  }
+
+  function remove(acc: Account, forgetProfile: boolean) {
+    return run(
+      acc.id,
+      () => api.deleteAccount(acc.id, forgetProfile),
+      (result) =>
+        toast(`${acc.name}: 已删除${result.profile_removed ? '，浏览器 profile 一起删了' : ''}`, true),
+    )
   }
 
   async function checkInMany(ids: number[]) {
@@ -215,6 +257,28 @@ export default function App() {
   function openForm(acc: Account | null) {
     setEditing(acc)
     onOpen()
+  }
+
+  function openInject(acc: Account) {
+    setInjecting(acc)
+    onInjectOpen()
+  }
+
+  /** Report what an injection proved, in the three shapes it can come back as.
+   *
+   *  `verified` is three-valued and the difference matters: true is the only evidence that
+   *  tomorrow's unattended run will work, false means these cookies did not get through,
+   *  and null means nobody asked — so it must not be reported as success. */
+  async function afterInjected(acc: Account, result: IdpInjection) {
+    await refresh()
+    if (result.warning) toast(`${acc.name}: ${result.warning}`, false)
+    if (result.verified === true) {
+      toast(`${acc.name}: 已注入 ${result.injected} 条 cookie，无头登录验证通过，之后每天自动`, true)
+    } else if (result.verified === false) {
+      toast(`${acc.name}: 已注入 ${result.injected} 条，但登录没通过 —— ${result.reason ?? '站点没有说明原因'}`, false)
+    } else {
+      toast(`${acc.name}: 已注入 ${result.injected} 条 cookie，未验证，成不成要等下次签到`, true)
+    }
   }
 
   /** The card layout has no table row to press, so its checkbox drives the same Set directly. */
@@ -252,11 +316,16 @@ export default function App() {
         ...(needsBrowser(acc)
           ? [{ key: 'browser', label: '浏览器登录', color: 'secondary' as const, run: () => void browserLogin(acc) }]
           : []),
+        // Offered on the same condition as 浏览器登录, and beside it: that one needs a desktop
+        // to open a window on, this one is how the same account gets set up on a server.
+        ...(needsBrowser(acc)
+          ? [{ key: 'inject', label: '注入会话', color: 'secondary' as const, run: () => openInject(acc) }]
+          : []),
         ...(acc.session && !(acc.username && acc.password)
           ? [{ key: 'bootstrap', label: '设置密码', color: 'default' as const, run: () => void bootstrap(acc) }]
           : []),
         { key: 'edit', label: '编辑', color: 'default', run: () => openForm(acc) },
-        { key: 'remove', label: '删除', color: 'danger', run: () => void remove(acc) },
+        { key: 'remove', label: '删除', color: 'danger', run: () => askToDelete(acc) },
       ] as RowAction[],
       avatar: (
         <AccountAvatar
@@ -343,6 +412,16 @@ export default function App() {
               >
                 <p className="overflow-hidden text-default-500 text-xs sm:text-sm">
                   面板开着就会自动补签：每个账号每天成功一次，失败按 30 分钟 → 1 → 2 → 4 小时退避重试
+                  {/* Here rather than in the toolbar: cleaning up profiles is maintenance, and
+                      the toolbar's three controls are what someone came to the page to press.
+                      A link keeps it reachable without competing with them on a phone. */}
+                  <button
+                    type="button"
+                    onClick={onCleanupOpen}
+                    className="ml-2 underline decoration-dotted underline-offset-2 hover:text-default-700"
+                  >
+                    清理 profile
+                  </button>
                 </p>
               </div>
             </div>
@@ -536,7 +615,26 @@ export default function App() {
         )}
       </div>
 
-      <AccountForm account={editing} isOpen={isOpen} onClose={onClose} onSaved={refresh} />
+      <AccountForm account={editing} isOpen={isOpen} onClose={onClose} onSaved={afterSaved} />
+      <IdpCookiesModal
+        account={injecting}
+        isOpen={injectOpen}
+        onClose={onInjectClose}
+        onInjected={(acc, result) => void afterInjected(acc, result)}
+      />
+      <DeleteAccountModal
+        account={deleting}
+        isOpen={deleteOpen}
+        onClose={onDeleteClose}
+        onConfirm={(acc, forgetProfile) => void remove(acc, forgetProfile)}
+      />
+      <ProfileCleanupModal
+        isOpen={cleanupOpen}
+        onClose={onCleanupClose}
+        onDeleted={(removed) =>
+          toast(removed ? `已清理 ${removed} 个浏览器 profile` : '没有删掉任何 profile', removed > 0)
+        }
+      />
       <PromoCard />
     </div>
   )

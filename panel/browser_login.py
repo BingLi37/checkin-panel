@@ -9,9 +9,13 @@ Requires the cloakbrowser helpers vendored in `panel/vendor/utils/` — see the
 README there for what they are and what was changed.
 """
 import asyncio
+import json
+import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Optional
 
 from panel.vendor.utils.browser import (
@@ -87,8 +91,55 @@ STUCK_AFTER_TICKS = 15
 # here: that is also what a consent page looks like, and clicking one is this loop's job.
 IDP_LOGIN_MARKS = ('/login', '/signin', '/sign_in', '/sessions/new', '/u/login')
 BUTTON_TIMEOUT_MS = 20_000  # SPA render + however long Turnstile keeps the button disabled
+# One click attempt, retried until BUTTON_TIMEOUT_MS runs out rather than spent in one go: what
+# gets in the way here arrives *after* the button does, so a single long wait cannot recover from
+# it while a short one plus a dismissal can. Measured 2.7s for the click that lands.
+CLICK_TRY_MS = 5_000
 CONSENT_TIMEOUT_MS = 2_000  # a consent page is already open; do not stall the poll loop
 UNSAFE_IN_A_PATH = re.compile(r'[^0-9A-Za-z._-]+')
+
+
+def profile_name(account_name: str) -> str:
+	"""The directory name this account's browser profile gets.
+
+	One function rather than the four copies of this line it replaces, because deleting a
+	profile has to land on exactly the path launching one created. Two names that differ
+	only in a character this strips share a directory — deliberate, and why `store` keys
+	accounts by (name, base_url): renaming the rule would orphan every existing profile.
+	"""
+	return UNSAFE_IN_A_PATH.sub('_', account_name).strip('._') or 'account'
+
+
+def profile_dir(account_name: str, provider: str) -> Path:
+	"""Where this account's profile lives, asked of the same code that launches it.
+
+	Reading `load_browser_login_settings` rather than rebuilding the path keeps the answer
+	true if the layout or `CHECKIN_BROWSER_PROFILE_DIR` ever moves.
+	"""
+	return load_browser_login_settings(profile_name(account_name), provider).profile_dir
+
+
+def forget_profile(account_name: str, provider: str) -> bool:
+	"""Delete this account's browser profile. True if there was one.
+
+	What goes with it is the IdP session, which is the point: an account deleted from the
+	database still had its whole github.com or linux.do login sitting in here, and no panel
+	screen mentioned the directory. There is no undo — the session has to be pasted or
+	logged in again — so the caller asks first.
+
+	The containment check is belt and braces. `profile_name` already strips every path
+	separator, so no account name can reach outside the root; the check is what makes that
+	still true if the rule is ever loosened, because the operation on the other side of it
+	is `rmtree`.
+	"""
+	target = profile_dir(account_name, provider).resolve()
+	root = Path(os.getenv('CHECKIN_BROWSER_PROFILE_DIR', '.browser_profiles')).resolve()
+	if root not in target.parents:
+		raise ValueError(f'{target} 不在 profile 根目录 {root} 之下，拒绝删除')
+	if not target.is_dir():
+		return False
+	shutil.rmtree(target)
+	return True
 
 
 def _idp_pages(context, root: str) -> list:
@@ -105,23 +156,36 @@ def _idp_wants_a_human(context, root: str) -> bool:
 def _why_a_human_is_needed(context, root: str, tick: int, still: int) -> Optional[str]:
 	"""Why a headless run cannot finish on its own, or None while it still might.
 
-	Two shapes, because an IdP does not always say what it wants. A login *page* names
-	itself, and ~10s of redirects is plenty before believing one. But `connect.linux.do`
-	renders whatever it wants at `/oauth2/authorize` — measured: Cloudflare answers that
-	URL with a `Just a moment...` challenge — so the tab sits on an authorize URL that
-	looks exactly like a consent page we are about to click. Nothing there matches
-	`/login`, so the old check never fired and the run burned the full 120s to reach a
-	TimeoutError that named no cause.
+	Three shapes, because a page that wants hands does not always say so. A login *page*
+	names itself, and ~10s of redirects is plenty before believing one. But
+	`connect.linux.do` renders whatever it wants at `/oauth2/authorize` — measured:
+	Cloudflare answers that URL with a `Just a moment...` challenge — so the tab sits on an
+	authorize URL that looks exactly like a consent page we are about to click. Nothing
+	there matches `/login`, so a URL check never fires and the run burns the full 120s to
+	reach a TimeoutError that names no cause.
 
-	So the second shape is simply **nothing moving**: no page changed URL for ~30s while
-	a tab sits at the IdP. A consent page does not do that — we click it every tick and it
-	navigates. Only a challenge or a form waiting for hands does.
+	So the second shape is simply **nothing moving**: no page changed URL for ~30s. A
+	consent page does not do that — we click it every tick and it navigates. Only a
+	challenge or a form waiting for hands does.
+
+	The third is the same stall on the *site's own* pages, and it is a separate branch
+	because `_idp_pages` excludes them by construction: it keeps the tabs whose URL does
+	not contain `root`. A challenge served by the check-in site itself therefore left the
+	stall detector with an empty list and reported nothing (measured on gorouter.app: the
+	whole 120s spent, then a bare timeout). Which side stalled changes the advice, so the
+	two branches say different things — the site's own challenge usually clears on a retry,
+	because the run that hit it leaves its `cf_clearance` in the profile.
 	"""
 	if tick >= HUMAN_AFTER_TICKS and _idp_wants_a_human(context, root):
 		return 'IdP 显示的是它自己的登录页'
 	if still >= STUCK_AFTER_TICKS and _idp_pages(context, root):
 		urls = ' | '.join(p.url for p in _idp_pages(context, root))
 		return f'IdP 页面卡住不动（多半是 Cloudflare 人机验证）: {urls}'
+	# Blank tabs are excluded for the same reason `_idp_pages` excludes them: `about:blank`
+	# is what the context opens with, and a run that has not navigated yet is not stuck.
+	parked = [p.url for p in context.pages if p.url not in ('', 'about:blank')]
+	if still >= STUCK_AFTER_TICKS and parked:
+		return f'站点自己的页面卡住不动（多半是 Cloudflare 人机验证）: {" | ".join(parked)}'
 	return None
 
 
@@ -137,22 +201,60 @@ def _selectors(texts) -> tuple[str, ...]:
 async def _unblock_login(page, texts, timeout_ms: int = BUTTON_TIMEOUT_MS) -> None:
 	"""Get one of `texts` into a clickable state, or give up quietly.
 
-	Covers both ways a login page is not ready: it is still empty at
-	`domcontentloaded` (4.6s on seekai.cc), and its buttons stay `disabled` until
-	「我已阅读并同意用户协议」 is ticked — a box that can render a beat *after* the button
-	does, so one pass at ticking it loses the race about half the time. A page with no
-	such box has its button enabled and returns on the first look.
+	Covers the three ways a login page is not ready. It is still empty at `domcontentloaded`
+	(4.6s on seekai.cc). Its buttons stay `disabled` until 「我已阅读并同意用户协议」 is ticked
+	— a box that can render a beat *after* the button does, so one pass at ticking it loses
+	the race about half the time. And something can be drawn *over* the button: anyrouter.top
+	opens with a 系统公告 modal (`.semi-modal-wrap`, `position: fixed`, `z-index: 1000`) whose
+	body paragraph lands across the OAuth buttons, which is what `dismiss_popups` is for.
+
+	Ready therefore means "receives events", not `is_enabled()`. A covered button *is*
+	enabled, so the old check returned in 0.0s while the page was still a skeleton and the
+	modal had yet to render; the click then spent its full 20s failing the same hit test
+	Playwright performs, and reported it as the button not being there at all.
+
+	And **twice in a row**, half a second apart, because one look is satisfied by the moment
+	before the page has finished happening. Measured on anyrouter.top: at t=0.0 the buttons
+	are drawn over a Semi skeleton and nothing is over them, at t=0.5 the 公告 modal is up.
+	A single look returns in that first instant and the click lands on a button whose handler
+	cannot do anything yet — the card is still waiting for the site status `_forget_spa_login`
+	cleared, so it has no OAuth URL to go to. That click *succeeds* mechanically and the run
+	then dies 30s later in the poll loop, reporting a stall on a page it never left. Two
+	consecutive looks cost half a second on a page that was ready all along.
+	"""
+	deadline = time.monotonic() + timeout_ms / 1000
+	steady = 0
+	while time.monotonic() < deadline:
+		if await _receives_clicks(page, texts):
+			steady += 1
+			if steady >= 2:
+				return
+		else:
+			steady = 0
+			await _accept_terms(page)
+			await dismiss_popups(page)
+		await asyncio.sleep(0.5)
+
+
+async def _receives_clicks(page, texts) -> bool:
+	"""Whether one of `texts` is drawn, enabled, and owns its own centre point.
+
+	That last clause is the question Playwright's click asks before it will act, and the one
+	nothing else here was asking: `elementFromPoint` at the middle of the button has to come
+	back as the button or something inside it. Anything else is a layer in the way.
 	"""
 	button = page.locator(', '.join(_selectors(texts))).first
-	deadline = time.monotonic() + timeout_ms / 1000
-	while time.monotonic() < deadline:
-		try:
-			if await button.is_enabled(timeout=1000):
-				return
-		except Exception:  # not drawn yet
-			pass
-		await _accept_terms(page)
-		await asyncio.sleep(0.5)
+	try:
+		if not await button.is_enabled(timeout=1000):
+			return False
+		return bool(await button.evaluate("""(el) => {
+			const r = el.getBoundingClientRect();
+			if (r.width === 0 || r.height === 0) return false;
+			const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+			return at === el || el.contains(at);
+		}"""))
+	except Exception:  # not drawn yet, or it went away between the two calls
+		return False
 
 
 async def _accept_terms(page) -> None:
@@ -189,17 +291,56 @@ async def _click_first(page, texts, timeout_ms: int = BUTTON_TIMEOUT_MS) -> bool
 
 	Playwright's click waits for the element to become enabled on its own, which covers
 	a button that is still disabled when we get to it.
+
+	Short tries in a loop rather than one long wait, because the thing in the way arrives
+	*after* the button: anyrouter.top's 系统公告 modal renders ~0.5s behind the login card, so
+	a click that began on a clear button is still waiting when the modal lands on top, and
+	Playwright's retries can never pass the hit test again. Each pass therefore gives up
+	early, clears whatever is over the page, and looks again — measured: the click lands in
+	2.7s once the modal is gone. Two selectors matching at 20s each also spent 41s reaching
+	the same failure, and this loop has to fit inside the poll loop's own budget.
 	"""
 	await _wait_for_rendered(page, texts, timeout_ms)
-	for selector in _selectors(texts):
-		try:
-			button = page.locator(selector).first
-			if await button.is_visible():
-				await button.click(timeout=timeout_ms)
-				return True
-		except Exception:
-			continue
-	return False
+	deadline = time.monotonic() + timeout_ms / 1000
+	# Never longer than the whole budget: the consent page is called with 2s precisely so it
+	# cannot stall the poll loop, and a 5s try per selector would spend 40s of it.
+	try_ms = min(CLICK_TRY_MS, timeout_ms)
+	while True:
+		for selector in _selectors(texts):
+			try:
+				button = page.locator(selector).first
+				if await button.is_visible():
+					await button.click(timeout=try_ms)
+					return True
+			except Exception:
+				continue
+		if time.monotonic() >= deadline:
+			return False
+		await dismiss_popups(page)
+		await _accept_terms(page)
+		await asyncio.sleep(0.5)
+
+
+async def _why_no_button(page, texts, provider: str) -> str:
+	"""Why `_click_first` came back False, in the owner's words.
+
+	The two causes need different words because they need different fixes, and until this
+	existed they shared one message that named only the first: a site that really has no
+	such login, and a button that is there but under something. The second was reported as
+	「找不到登录入口」 for a page whose LinuxDO button was drawn, enabled, and 40px from the
+	pointer — which sent the owner looking for a login method the site plainly had.
+	"""
+	drawn = False
+	try:
+		drawn = await page.locator(', '.join(_selectors(texts))).first.is_visible()
+	except Exception:
+		drawn = False
+	if not drawn:
+		return f'{page.url} 上找不到 {provider} 登录入口（重新载入后再找过一次）'
+	return (
+		f'{provider} 登录按钮在 {page.url} 上，但一直点不到 —— 有东西盖在它上面（站点公告弹窗之类），'
+		'关不掉。直接再试一次通常就好；连着几次都这样，再点「浏览器登录」开可见窗口手动点一下'
+	)
 
 
 async def _spa_user(context, root: str) -> Optional[dict]:
@@ -276,24 +417,45 @@ async def _logged_in(context, base_url: str, root: str) -> Optional[tuple[str, d
 	return (max(sessions, key=len), user) if sessions and user else None
 
 
-async def _forget_site(context, root: str) -> None:
-	"""Log out of the site while staying logged in at the IdP.
+async def _forget_site(context, root: str) -> list[dict]:
+	"""Log out of the site while staying logged in at the IdP. Returns what it dropped.
 
 	Sites that grant the daily bonus on login show no OAuth button while a
 	session is live, and reusing that session would credit nothing — so drop the
 	site's cookies and keep everyone else's. This is the "logout then re-login"
 	those sites require, minus the logout button.
+
+	The dropped cookies come back so the caller can put them *back* when the re-login
+	does not land. This is not tidiness: the same clear costs two kinds of site
+	opposite amounts. A `login_bonus` site has to be logged out or it credits nothing,
+	while on a `visit` site the session **is** the check-in — measured on anyrouter.top,
+	one card minted by an OAuth hop carried 13 days of daily runs on its own, and no
+	daily run ever mints another. So a clear followed by a failed login turns "collecting
+	every day" into "cannot log in at all", and the owner is worse off for having pressed
+	the button. Nothing here can tell the two sites apart (this function is handed a
+	`base_url`, never a mechanism), so it does not try: it hands the evidence back and
+	`browser_login` rolls forward on success, back on failure.
 	"""
-	keep = [c for c in await context.cookies() if root not in (c.get('domain') or '')]
+	cookies = await context.cookies()
+	dropped = [c for c in cookies if root in (c.get('domain') or '')]
+	keep = [c for c in cookies if root not in (c.get('domain') or '')]
 	await context.clear_cookies()
 	if keep:
 		await context.add_cookies(keep)
+	return dropped
 
 
 async def _forget_spa_login(page, base_url: str) -> None:
 	"""Cookies are only half of the logout: the SPA keeps the user in localStorage
 	and its router sends /login straight to /console while that is there, so the
-	OAuth button we came for would not exist. Clear it and come back."""
+	OAuth button we came for would not exist. Clear it and come back.
+
+	Everything goes, not just the keys that look like a login. Which key holds the user
+	differs by fork, and a logout that misses it leaves us on /console with no button —
+	the failure this function exists to prevent. The cost is that the site's cached status
+	goes too, which can cost the login card its provider chooser on the next paint; the
+	caller reloads once when the button is missing rather than narrowing the clear here.
+	"""
 	try:
 		await page.evaluate('() => { localStorage.clear(); sessionStorage.clear(); }')
 	except Exception:  # nothing stored yet — a WAF interstitial has no site origin
@@ -357,12 +519,12 @@ async def mint_turnstile(
 	visits `/login` and renders it there.
 	"""
 	base_url = base_url.rstrip('/')
-	profile_name = UNSAFE_IN_A_PATH.sub('_', account_name).strip('._') or 'account'
+	profile = profile_name(account_name)
 	# Ephemeral on purpose: there is nothing to remember, and a persistent profile
 	# accumulates Cloudflare challenge state that makes the widget refuse to render —
 	# measured, a fresh context mints where the account's own profile does not.
 	settings = replace(
-		load_browser_login_settings(profile_name, provider, persist_profile=False), headless=headless
+		load_browser_login_settings(profile, provider, persist_profile=False), headless=headless
 	)
 	context = await launch_login_context(settings, use_proxy=True)  # the challenge needs the detour
 	try:
@@ -519,8 +681,8 @@ async def browser_visit(
 	"""
 	base_url = base_url.rstrip('/')
 	root = _root(base_url)
-	profile_name = UNSAFE_IN_A_PATH.sub('_', account_name).strip('._') or 'account'
-	settings = replace(load_browser_login_settings(profile_name, provider), headless=headless)
+	profile = profile_name(account_name)
+	settings = replace(load_browser_login_settings(profile, provider), headless=headless)
 	context = await launch_login_context(settings)
 	try:
 		page = await context.new_page()
@@ -586,21 +748,42 @@ async def browser_login(
 	# name — and cannot be all dots, or it would land on the parent. Sharing one name
 	# means sharing one profile: the store forbids that per site, and across sites it
 	# means "the same IdP identity", which is what you want.
-	profile_name = UNSAFE_IN_A_PATH.sub('_', account_name).strip('._') or 'account'
+	profile = profile_name(account_name)
 	# the caller decides visibility; the env default (CHECKIN_HEADLESS) is for CI
-	settings = replace(load_browser_login_settings(profile_name, provider), headless=headless)
+	settings = replace(load_browser_login_settings(profile, provider), headless=headless)
 	context = await launch_login_context(settings)
+	# What the logout dropped, and whether anything replaced it. A run that ends without a
+	# credential puts them back (see `_forget_site`): on a `visit` site the cleared session
+	# was the account's whole check-in, and losing it to a click that missed is a regression
+	# the owner caused by asking for a login.
+	dropped: list[dict] = []
+	won = False
 	try:
-		await _forget_site(context, root)
+		dropped = await _forget_site(context, root)
 		page = await context.new_page()
 		await prepare_browser_page(page)
 		await page.goto(f'{base_url}/login', wait_until='domcontentloaded')
 		await wait_for_waf_ready(page)
 		await _forget_spa_login(page, base_url)
-		await _unblock_login(page, buttons)  # render, then tick whatever keeps it disabled
 
-		if not await _click_first(page, buttons):
-			raise RuntimeError(f'{base_url}/login 上找不到 {provider} 登录入口')
+		# Twice, because the logout above can cost the OAuth button its own render. These SPAs
+		# decide on the *first* paint whether the card shows the provider chooser or the
+		# email/password form, and they read that from the site status cached in localStorage —
+		# which `_forget_spa_login` has just cleared, having no way to tell a fork's login keys
+		# from its config. Measured on anyrouter.top: the card comes up as the password form,
+		# `/api/status` answers a beat later (200, `linuxdo_oauth: true`) and re-fills the cache,
+		# and the card does not repaint — so LinuxDO is nowhere on the page and the run died
+		# reporting the site had no LinuxDO login at all. One reload fixes it, because by then
+		# the status is cached again. Costs nothing when the button was there the first time.
+		for attempt in range(2):
+			await _unblock_login(page, buttons)  # render, tick the terms box, clear what covers it
+			if await _click_first(page, buttons):
+				break
+			if attempt == 0:
+				await page.goto(f'{base_url}/login', wait_until='domcontentloaded')
+				await wait_for_waf_ready(page)
+		else:
+			raise RuntimeError(await _why_no_button(page, buttons, provider))
 
 		# Wall-clock, not a tick count: on a flaky network one whoami blocks for the
 		# whole HTTP timeout, and 60 ticks × 25s was a request that never came back.
@@ -615,6 +798,7 @@ async def browser_login(
 				# ponytail: this always re-logs in first, even when the profile is still
 				# logged in from yesterday — one OAuth round trip a day. Reuse the live
 				# session instead if the launch cost ever matters.
+				won = True  # a newer card is in the jar; do not put the old one back over it
 				return BrowserLogin(credential, user)
 			urls = [p.url for p in context.pages]
 			still = still + 1 if urls == seen else 0
@@ -622,12 +806,23 @@ async def browser_login(
 			# Headless runs cannot type a password or tick a Cloudflare box, so stop as soon
 			# as it is clear one is wanted, instead of burning the whole timeout on a page
 			# that will never move and then reporting a bare TimeoutError.
+			#
+			# What to *do* about it differs by side, so the advice is not one sentence. An
+			# expired IdP session needs a visible window once. A challenge on the site's own
+			# page needs nothing but another go: the run that hit it left the profile holding
+			# the `cf_clearance` it earned, so the retry usually walks straight through —
+			# telling that owner to log in by hand sends them after a session that is fine.
 			if headless:
 				reason = _why_a_human_is_needed(context, root, tick, still)
 				if reason:
+					if _idp_pages(context, root):
+						raise RuntimeError(
+							f'{provider} 需要先人工登录一次（{reason}）：在面板里点「浏览器登录」'
+							f'（会打开可见窗口），登录并授权一次后，之后每天都能自动完成。'
+						)
 					raise RuntimeError(
-						f'{provider} 需要先人工登录一次（{reason}）：在面板里点「浏览器登录」'
-						f'（会打开可见窗口），登录并授权一次后，之后每天都能自动完成。'
+						f'{reason} —— 这一次没过去，但它挣到的人机验证凭据已经留在 profile 里了，'
+						f'直接再试一次通常就能过；连着几次都这样，再点「浏览器登录」开可见窗口看一眼。'
 					)
 			for open_page in context.pages:  # consent may be a popup or the same tab
 				if 'oauth' in open_page.url or 'authorize' in open_page.url:
@@ -635,6 +830,147 @@ async def browser_login(
 					await _click_first(open_page, CONSENT_TEXTS, timeout_ms=CONSENT_TIMEOUT_MS)
 			tick += 1
 			await asyncio.sleep(POLL_S)
-		raise TimeoutError(f'{timeout_s}s 内没拿到会话；当前页面: {" | ".join(p.url for p in context.pages)}')
+		# Reaching here means no page ever sat still long enough to be called stuck, so the
+		# URLs are the only evidence there is. Say that much rather than implying a cause.
+		raise TimeoutError(
+			f'{timeout_s}s 内没拿到会话，页面一直在动、没有停下来过（所以不像人机验证）；'
+			f'当前页面: {" | ".join(p.url for p in context.pages)}'
+		)
+	finally:
+		if dropped and not won:
+			# Before the close, so the restore is what gets flushed to disk. Same name,
+			# domain and path as what the failed run may have left, so this overwrites the
+			# useless pre-login state cookie rather than stacking beside it.
+			try:
+				await context.add_cookies(dropped)
+			except Exception:  # a dead context cannot be rolled back; the loss is already taken
+				pass
+		await context.close()
+
+
+# What an exported cookie's `sameSite` is called on each side. A browser extension exports
+# Chrome's own vocabulary; Playwright takes the header's. An unlisted value (Chrome's
+# 'unspecified') means "do not send the attribute at all", so it maps to nothing.
+SAME_SITE = {'no_restriction': 'None', 'lax': 'Lax', 'strict': 'Strict'}
+# Fields Playwright accepts. Everything else an extension exports — `hostOnly`, `storeId`,
+# `id`, and the `session` boolean — has to be dropped: an unknown key is rejected outright.
+COOKIE_FIELDS = ('name', 'value', 'domain', 'path', 'secure', 'httpOnly')
+# Where each provider's own session lives, for warning about an export from the wrong tab.
+# Not a filter: LinuxDO authorises at connect.linux.do while its session cookie is on
+# linux.do, so the relationship is not one host to one provider.
+IDP_HOSTS = {'linuxdo': ('linux.do',), 'github': ('github.com',)}
+
+
+def playwright_cookies(raw: Optional[str]) -> list[dict]:
+	"""An exported cookie jar, in the shape `context.add_cookies` accepts. Raises if it is not one.
+
+	Two vocabularies have to be reconciled, and getting either wrong is rejected rather than
+	ignored: `expirationDate` is Playwright's `expires`, and a session cookie has no expiry
+	at all — sending one anyway pins a cookie that was meant to die with the browser.
+	"""
+	text = (raw or '').strip()
+	if not text:
+		raise ValueError('没有粘贴任何内容')
+	try:
+		parsed = json.loads(text)
+	except json.JSONDecodeError as e:
+		raise ValueError(
+			f'这段内容不是有效的 JSON：{e.msg}（第 {e.lineno} 行）。'
+			'请用 cookie 扩展的「导出 / Export」把整段 JSON 复制过来'
+		) from e
+	rows = parsed if isinstance(parsed, list) else [parsed]
+	cookies = []
+	for row in rows:
+		if not isinstance(row, dict):
+			continue
+		name, value, domain = row.get('name'), row.get('value'), row.get('domain')
+		if not (isinstance(name, str) and name and isinstance(value, str) and isinstance(domain, str) and domain):
+			continue
+		cookie = {k: row[k] for k in COOKIE_FIELDS if k in row}
+		cookie['path'] = row.get('path') or '/'
+		expires = row.get('expirationDate', row.get('expires'))
+		if isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires > 0:
+			cookie['expires'] = float(expires)
+		same_site = SAME_SITE.get(str(row.get('sameSite') or '').lower())
+		if same_site:
+			cookie['sameSite'] = same_site
+		cookies.append(cookie)
+	if not cookies:
+		raise ValueError(
+			'这段 JSON 里没有一条可用的 cookie（每条至少要有 name、value、domain）。'
+			'请确认导出的是 cookie 列表，而不是别的东西'
+		)
+	return cookies
+
+
+@dataclass
+class IdpInjection:
+	"""What one IdP-cookie injection did, and whether the profile now really logs in.
+
+	`verified` is three-valued on purpose: True means a headless OAuth hop just completed
+	with these cookies, False means it did not, and None means nobody asked. Only True is
+	evidence — the whole reason to verify on the spot is that "the cookies went in" says
+	nothing about whether the IdP accepts them.
+	"""
+
+	injected: int
+	hosts: tuple[str, ...]
+	verified: Optional[bool] = None
+	credential: Optional[str] = None  # the site session verification won, worth storing
+	api_user: Optional[str] = None
+	reason: Optional[str] = None  # why verification failed, in the owner's words
+	warning: Optional[str] = None
+
+
+async def inject_idp_cookies(
+	raw: str, *, provider: str, account_name: str, base_url: str, verify: bool = True
+) -> IdpInjection:
+	"""Load an exported IdP session into this account's profile, then prove it works.
+
+	The profile is the one `browser_login` uses, keyed exactly the same way — a different
+	name here would write a session into a directory nothing reads.
+
+	Normalising happens before the browser is launched, so a paste that is not a cookie jar
+	cannot leave a half-written profile behind.
+	"""
+	if provider not in PROVIDER_BUTTONS:
+		raise ValueError(f'{provider} 不是授权登录方式，可选: {tuple(PROVIDER_BUTTONS)}')
+	cookies = playwright_cookies(raw)
+	hosts = tuple(sorted({c['domain'].lstrip('.') for c in cookies}))
+	expected = IDP_HOSTS.get(provider, ())
+	warning = None
+	if expected and not any(host.endswith(e) for host in hosts for e in expected):
+		# Worth saying, not worth refusing: an export may legitimately come from a host this
+		# table does not know, and refusing would block a paste that works.
+		warning = (
+			f'这段 cookie 来自 {"、".join(hosts)}，看着不像 {provider}'
+			f'（一般是 {"、".join(expected)}）——登录不上的话，先确认导出的标签页对不对'
+		)
+
+	profile = profile_name(account_name)
+	# Headless regardless of the env default: this launch only writes cookies to disk, so a
+	# window would flash open for no one to look at.
+	settings = replace(load_browser_login_settings(profile, provider), headless=True)
+	context = await launch_login_context(settings)
+	try:
+		await context.add_cookies(cookies)
 	finally:
 		await context.close()
+
+	if not verify:
+		return IdpInjection(len(cookies), hosts, warning=warning)
+	try:
+		result = await browser_login(base_url=base_url, provider=provider, account_name=account_name, headless=True)
+	except Exception as e:
+		# browser_login's headless branch already separates "the IdP wants a human" from
+		# "nothing on this page is moving" (a Cloudflare challenge), and that difference
+		# decides whether re-exporting the cookies would help at all. Pass its words through.
+		return IdpInjection(len(cookies), hosts, verified=False, reason=newapi.why(e), warning=warning)
+	return IdpInjection(
+		len(cookies),
+		hosts,
+		verified=True,
+		credential=result.credential,
+		api_user=str(result.user.get('id') or '') or None,
+		warning=warning,
+	)
