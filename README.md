@@ -7,6 +7,8 @@
 [![作者 @BinbingLi](https://img.shields.io/badge/@BinbingLi-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/BinbingLi)
 [![agentrouter.org 邀请注册](https://img.shields.io/badge/agentrouter.org-邀请注册-f59e0b?style=flat-square)](https://agentrouter.org/register?aff=fRlT)
 
+**简体中文** · [English](README.en.md)
+
 > 最后那个徽章是作者在 `agentrouter.org` 的**邀请链接**，点它注册是作者从这个面板得到回报的方式
 > —— 和面板里那张推荐卡片是同一件事（[`docs/promo-cards.md`](docs/promo-cards.md)）。不想走它，
 > 直接去站点首页注册一样能用这个面板。
