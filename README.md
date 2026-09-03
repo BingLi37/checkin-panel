@@ -1,5 +1,16 @@
 # 自动签到面板
 
+[![下载 Windows 桌面版](https://img.shields.io/badge/下载-Windows_桌面版-2563eb?style=flat-square&logo=windows&logoColor=white)](https://github.com/BingLi37/checkin-panel/releases/latest)
+[![许可 MIT](https://img.shields.io/badge/许可-MIT-16a34a?style=flat-square)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776ab?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![三种运行方式](https://img.shields.io/badge/运行方式-桌面版_/_容器_/_控制台-64748b?style=flat-square&logo=docker&logoColor=white)](#三种运行方式)
+[![作者 @BinbingLi](https://img.shields.io/badge/@BinbingLi-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/BinbingLi)
+[![agentrouter.org 邀请注册](https://img.shields.io/badge/agentrouter.org-邀请注册-f59e0b?style=flat-square)](https://agentrouter.org/register?aff=fRlT)
+
+> 最后那个徽章是作者在 `agentrouter.org` 的**邀请链接**，点它注册是作者从这个面板得到回报的方式
+> —— 和面板里那张推荐卡片是同一件事（[`docs/promo-cards.md`](docs/promo-cards.md)）。不想走它，
+> 直接去站点首页注册一样能用这个面板。
+
 给 New API 类型的中转站做每日签到的自建面板。加账号、看余额、每天自动领，一台机器上跑，不依赖
 任何外部服务。
 
