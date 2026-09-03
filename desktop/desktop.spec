@@ -174,7 +174,8 @@ for src, dst in (
   data\\panel.db 里的密码是明文保存的，请当作密码文件对待。
   面板本身没有登录密码 —— 它默认只监听 127.0.0.1，也就是只有这台
   电脑能访问。不要把它暴露到公网，否则任何人都能读到你所有账号的
-  密码。需要远程访问请看项目文档 docs/deploying.md。
+  密码。需要远程访问，先读这一份:
+  https://github.com/BingLi37/checkin-panel/blob/main/docs/deploying.md
 
 许可
 ----

@@ -1,6 +1,6 @@
 # 自动签到面板
 
-[![下载 Windows 桌面版](https://img.shields.io/badge/下载-Windows_桌面版-2563eb?style=flat-square&logo=windows&logoColor=white)](https://github.com/BingLi37/checkin-panel/releases/latest)
+[![下载 Windows 桌面版](https://img.shields.io/badge/下载-Windows_桌面版-2563eb?style=flat-square&logo=windows&logoColor=white)](https://github.com/BingLi37/checkin-panel/releases)
 [![许可 MIT](https://img.shields.io/badge/许可-MIT-16a34a?style=flat-square)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776ab?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![三种运行方式](https://img.shields.io/badge/运行方式-桌面版_/_容器_/_控制台-64748b?style=flat-square&logo=docker&logoColor=white)](#三种运行方式)

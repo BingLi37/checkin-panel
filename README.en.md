@@ -1,6 +1,6 @@
 # Check-in Panel
 
-[![Download for Windows](https://img.shields.io/badge/Download-Windows_Desktop-2563eb?style=flat-square&logo=windows&logoColor=white)](https://github.com/BingLi37/checkin-panel/releases/latest)
+[![Download for Windows](https://img.shields.io/badge/Download-Windows_Desktop-2563eb?style=flat-square&logo=windows&logoColor=white)](https://github.com/BingLi37/checkin-panel/releases)
 [![License MIT](https://img.shields.io/badge/License-MIT-16a34a?style=flat-square)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776ab?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Three ways to run](https://img.shields.io/badge/Run-Desktop_/_Docker_/_Console-64748b?style=flat-square&logo=docker&logoColor=white)](#three-ways-to-run)

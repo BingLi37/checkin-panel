@@ -19,15 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-This project vendors code from a third party, under its own terms:
-
-- `panel/vendor/utils/` — cloakbrowser helpers by Milly, BSD 2-Clause, from
-  https://github.com/Milly/anyrouter-check-in. Five files, used only by the
-  browser login. The notice is at `panel/vendor/LICENSE`, and both the desktop
-  build and the container image carry it.
-
-The browser this panel drives (CloakBrowser) is a separate closed-source product
-downloaded at runtime, not redistributed here. See `THIRD-PARTY.md`.
